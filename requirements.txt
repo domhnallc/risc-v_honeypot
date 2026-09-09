@@ -1,0 +1,4 @@
+asyncssh>=2.14
+aiohttp>=3.9
+pydantic>=2.4
+PyYAML>=6.0

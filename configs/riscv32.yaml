@@ -1,0 +1,45 @@
+# Sample persona: 32-bit RISC-V (e.g. Allwinner D1 / low-end embedded IoT board)
+persona:
+  arch: riscv32
+  hostname: openwrt
+  kernel_version: "5.4.61"
+  isa: rv32imafdc
+  uarch: "allwinner,d1"
+  mmu: "none"
+  hart_count: 1
+  os_release_name: OpenWrt
+  os_release_version: "21.02"
+  ssh_banner: "Allwinner D1 RISC-V Linux (OpenWrt)"
+  telnet_banner: |
+    Allwinner D1 RISC-V Linux (OpenWrt)
+    login: 
+
+listeners:
+  bind_host: "0.0.0.0"
+  ssh_enabled: true
+  ssh_port: 2222
+  telnet_enabled: true
+  telnet_port: 2223
+
+credentials:
+  accept_any: true
+  allow_list:
+    - {username: root, password: root}
+    - {username: admin, password: admin}
+    - {username: root, password: "12345"}
+    - {username: root, password: xc3511}
+
+fetcher:
+  quarantine_dir: var/quarantine
+  jobs_dir: var/jobs
+  max_file_size_bytes: 52428800
+  timeout_seconds: 15
+  allowed_protocols: [http, https]
+  verify_tls: false
+
+logging:
+  log_dir: var/logs
+  transcript_dir: var/transcripts
+  json_log_filename: events.jsonl
+  level: INFO
+  forward_url: null

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+
+# runtime state: quarantined samples, job queue, logs, transcripts, host keys
+var/logs/*
+var/transcripts/*
+var/quarantine/*
+var/jobs/*
+!var/logs/.gitkeep
+!var/transcripts/.gitkeep
+!var/quarantine/.gitkeep
+!var/jobs/.gitkeep
+var/ssh_host_key

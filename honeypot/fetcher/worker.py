@@ -10,6 +10,7 @@ Usage: python -m honeypot.fetcher.worker path/to/config.yaml
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import sys
 import time
@@ -27,14 +28,15 @@ async def run(config_path: str) -> None:
     while True:
         for job_path, job in claim_pending_jobs(config.fetcher.jobs_dir):
             result = await fetch_and_quarantine(job, config.fetcher, config.persona.arch)
+            # Full FetchResult, not just a subset -- SessionManager (running
+            # in a different process in "queued" mode) reconstructs a
+            # FetchResult from exactly these fields to log/render the
+            # outcome, so this must stay a superset of FetchResult's fields.
+            payload = {"job_id": job.job_id, "processed_at": time.time(), **dataclasses.asdict(result)}
             result_path = job_path.with_suffix(".result.json")
-            result_path.write_text(json.dumps({
-                "job_id": job.job_id,
-                "processed_at": time.time(),
-                "success": result.success,
-                "sha256": result.sha256,
-                "error": result.error,
-            }))
+            tmp_path = result_path.with_suffix(".result.json.tmp")
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.rename(result_path)  # atomic: the poller never sees a partial write
             print(f"[fetcher-worker] processed {job.job_id}: success={result.success}", file=sys.stderr)
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 

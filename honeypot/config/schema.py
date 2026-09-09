@@ -77,6 +77,14 @@ class FetcherConfig(BaseModel):
     timeout_seconds: float = 15.0
     allowed_protocols: list[str] = Field(default_factory=lambda: ["http", "https"])
     verify_tls: bool = False
+    # "inline": SessionManager awaits fetch_and_quarantine() directly -- fine
+    # for a single-process/single-container deployment (default).
+    # "queued": SessionManager only enqueues a job and polls for the result a
+    # separate `honeypot.fetcher.worker` process writes -- required whenever
+    # the fetcher actually runs as a different process/container, since that
+    # is the only mode that never performs the outbound fetch from the
+    # session-handling side (see docker-compose.yml).
+    mode: Literal["inline", "queued"] = "inline"
 
 
 class LoggingConfig(BaseModel):

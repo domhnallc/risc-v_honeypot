@@ -8,17 +8,24 @@ and writes both the structured JSON events and the raw transcript.
 """
 from __future__ import annotations
 
+import asyncio
+import dataclasses
+import json
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from honeypot.config.schema import HoneypotConfig
-from honeypot.fetcher.fetcher import fetch_and_quarantine
-from honeypot.fetcher.queue import make_job
+from honeypot.fetcher.fetcher import FetchResult, fetch_and_quarantine
+from honeypot.fetcher.queue import DownloadJob, enqueue_job, make_job
 from honeypot.logging.events import EventLogger, TranscriptWriter
 from honeypot.shell.commands import dispatch
 from honeypot.shell.filesystem import FakeFilesystem
 from honeypot.shell import persona as persona_render
+
+_QUEUE_POLL_INTERVAL_SECONDS = 0.3
+_QUEUE_RESULT_GRACE_SECONDS = 5.0  # slack on top of fetcher.timeout_seconds for queue latency
 
 
 def new_session_id() -> str:
@@ -107,8 +114,11 @@ class SessionManager:
             )
             job = make_job(self.session_id, self.src_ip, req.url, req.protocol,
                             req.requested_filename, raw)
-            fetch_result = await fetch_and_quarantine(job, self.config.fetcher,
-                                                        self.config.persona.arch)
+            if self.config.fetcher.mode == "queued":
+                fetch_result = await self._fetch_via_queue(job)
+            else:
+                fetch_result = await fetch_and_quarantine(job, self.config.fetcher,
+                                                            self.config.persona.arch)
             self.events.file_download(
                 self.session_id, url=req.url, protocol=req.protocol,
                 requested_filename=req.requested_filename, raw_command=raw,
@@ -124,6 +134,30 @@ class SessionManager:
             return self._render_download_response(req, fetch_result)
 
         return result.output
+
+    async def _fetch_via_queue(self, job: DownloadJob) -> FetchResult:
+        """"queued" mode: enqueue the job and poll for the result a separate
+        `honeypot.fetcher.worker` process writes, rather than fetching here.
+
+        This is what actually makes the network-isolation split in
+        docker-compose.yml true rather than aspirational: this process never
+        calls fetch_and_quarantine() itself in this mode, so it never
+        performs the outbound request to attacker-controlled infrastructure.
+        """
+        enqueue_job(self.config.fetcher.jobs_dir, job)
+        result_path = Path(self.config.fetcher.jobs_dir) / ".processing" / f"{job.job_id}.result.json"
+        deadline = time.monotonic() + self.config.fetcher.timeout_seconds + _QUEUE_RESULT_GRACE_SECONDS
+        result_fields = {f.name for f in dataclasses.fields(FetchResult)}
+        while time.monotonic() < deadline:
+            if result_path.exists():
+                try:
+                    data = json.loads(result_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
+                    continue
+                return FetchResult(**{k: v for k, v in data.items() if k in result_fields})
+            await asyncio.sleep(_QUEUE_POLL_INTERVAL_SECONDS)
+        return FetchResult(success=False, error="timed out waiting for isolated fetcher")
 
     def _render_download_response(self, req, fetch_result) -> str:
         host = urlsplit(req.url).netloc or req.url

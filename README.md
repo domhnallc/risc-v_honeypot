@@ -7,30 +7,76 @@ ever executing them**. See `riscv-honeypot-spec.md` for the full design spec
 this implementation follows, and `SAFETY.md` for the non-negotiable safety
 guarantees and how the code enforces them.
 
-## Install
+## Installation
+
+Requires Python 3.11+ (the codebase uses `X | Y` union type hints and
+`asyncio.TaskGroup`, both 3.11+). No system packages are needed -- unlike the
+spec's suggestion of `python-magic`/libmagic, this implementation uses a
+hand-rolled static ELF parser (`honeypot/fetcher/elf.py`) specifically to
+avoid a native-library dependency.
 
 ```
+git clone <this repo>            # or just cd into it if already local
+cd risc-v_honeypot
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[dev]'          # editable install + asyncssh/aiohttp/pydantic/pyyaml + pytest
 ```
 
-## Run
+Omit `[dev]` (`pip install -e .`) for a runtime-only install with no test
+dependencies -- useful on a deployment host that will only ever run
+`honeypot.main` or `honeypot.fetcher.worker`, never `pytest`.
+
+Verify the install:
+
+```
+pytest -q
+```
+
+All tests should pass, including `tests/test_no_dangerous_calls.py` (see
+"Test" below). If `pip install` fails building `cryptography` (an `asyncssh`
+dependency) on an unusual platform, that's the one component that may need a
+system C toolchain / OpenSSL headers; every other dependency ships prebuilt
+wheels.
+
+## Running
 
 ```
 python -m honeypot.main configs/riscv64.yaml
 ```
 
-or `configs/riscv32.yaml` for the 32-bit persona. By default this binds SSH
-on `2222` and Telnet on `2223` (edit the config to change ports, or bind
-privileged ports `22`/`23` via `setcap`/systemd rather than running as root).
+or `configs/riscv32.yaml` for the 32-bit persona. This runs in the
+foreground and logs startup ("SSH listener on ...", "Telnet listener on
+...") to stderr; stop it with Ctrl-C (or `kill` the process/`systemctl stop`
+if you've wrapped it in a unit -- there's no separate daemonization step in
+the codebase itself, so use your process supervisor of choice for
+backgrounding/restart-on-crash).
+
+By default this binds SSH on `2222` and Telnet on `2223` on all interfaces
+(`listeners.bind_host: 0.0.0.0` in the config). To use the standard `22`/`23`
+without running as root, either:
+
+- grant the interpreter the capability once: `sudo setcap
+  'cap_net_bind_service=+ep' "$(readlink -f .venv/bin/python3)"`, then set
+  `ssh_port: 22` / `telnet_port: 23` in the config, or
+- front it with a systemd socket unit / port-forwarding rule instead of
+  changing the app's bind ports at all.
+
 Any username/password is accepted by default (`credentials.accept_any: true`
 in the config) to maximize capture of credential-stuffing attempts; set it to
 `false` and populate `allow_list` to restrict to specific default IoT creds.
 
+While it's running, everything lands under `var/`: `var/logs/events.jsonl`
+(structured events), `var/transcripts/<session_id>.jsonl` (raw per-session
+I/O), and `var/quarantine/` (captured samples + JSON sidecars) -- see
+"Structured logs" and "Reviewing captured samples" below. Confirm it's
+actually listening with `ss -ltnp | grep -E ':(2222|2223)'` (or your
+configured ports).
+
 Running both riscv32 and riscv64 personas side by side (two config files,
 two sets of ports, or two hosts) lets you compare what droppers serve to
-each architecture.
+each architecture. For running the fetcher as a separate, network-isolated
+process instead of in-process, see "Deploying safely" below.
 
 ## Test
 

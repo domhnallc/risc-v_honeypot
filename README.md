@@ -117,6 +117,9 @@ traffic, switch to `fetcher.mode: queued` (see `configs/riscv64-docker.yaml`/
    sample should never mean running it (see "Reviewing captured samples"
    below).
 
+See "Firewall and ports" below for exactly what needs to be open in each
+direction for this two-process split.
+
 ### Deploying with Docker Compose
 
 `docker-compose.yml` implements the two-process split above as two
@@ -145,6 +148,21 @@ at the top of `docker-compose.yml` for the full rationale, and harden the
 above -- Docker's network separation here stops the fetcher from reaching
 the honeypot container, but a host firewall is still the right place to
 constrain what the fetcher's egress network can reach on your real network.
+
+## Firewall and ports
+
+| Direction | Port | Component | Required? | Notes |
+|---|---|---|---|---|
+| Inbound | `2222/tcp` (config: `listeners.ssh_port`) | honeypot | Required | SSH bait. Remap to `22` in the config (bare metal, needs `setcap`) or via Docker's `ports:` mapping (no `setcap` needed) -- see "Running"/"Deploying with Docker Compose". |
+| Inbound | `2223/tcp` (config: `listeners.telnet_port`) | honeypot | Required | Telnet bait. Same remap options, target `23`. |
+| Outbound | any TCP port, destination = attacker-supplied URL | fetcher | Required | The fetcher must reach whatever host:port a dropper's `wget`/`curl` URL names. **Don't restrict this to 80/443** -- Mirai-style droppers routinely serve payloads on non-standard ports specifically to dodge that assumption, and narrowing it would silently drop real capture opportunities. Restrict *destination* instead: this network must have internet egress but **no route to your internal/management network or the honeypot's own segment** (SAFETY.md guarantee #5). |
+| Outbound | none required | honeypot | N/A | The session process itself should need **no** outbound access once `fetcher.mode: queued` is set -- it only writes to the local/shared `var/jobs` path, never dials out. If you're still on `fetcher.mode: inline` (single-process dev mode), the session process performs the fetch itself and needs the same broad outbound TCP access described above; move to `queued` mode specifically to avoid giving the attacker-facing process any outbound path at all. |
+| Inbound | none required | fetcher | N/A | Nothing ever initiates a connection to the fetcher; don't publish or forward any port to it. |
+
+Two deployment-specific notes:
+
+- **Docker Compose** (see "Deploying with Docker Compose" above): the table above maps directly to `docker-compose.yml`'s `ports:` (only on the `honeypot` service) and the `public`/`egress` network split -- there is nothing else to open at the host firewall for the containers themselves. Still add host-level egress filtering on whatever interface backs the `egress` Docker network if your organization requires firewall enforcement independent of Docker's own network isolation (SAFETY.md guarantee #5 is explicit that this should not depend on Docker/app-level isolation alone).
+- **Bare-metal two-host split**: if `fetcher.jobs_dir`/`fetcher.quarantine_dir` are shared between the session and fetcher hosts over the network (NFS, SSHFS, rsync-over-SSH, etc. -- the codebase itself doesn't implement this, it's a filesystem-sharing choice you make at deploy time), open *that* transport's port (e.g. `2049/tcp` for NFS, `22/tcp` for SSHFS/rsync) only on a private link between the two honeypot hosts, never on a route reachable from the internet or from the fetcher's dropper-facing egress network.
 
 ## Reviewing captured samples
 

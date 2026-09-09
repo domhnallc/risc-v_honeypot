@@ -1,0 +1,70 @@
+# Two-container split matching SAFETY.md guarantees #2/#5: the "honeypot"
+# service (attacker-facing SSH/Telnet) and the "fetcher" service (outbound
+# payload retrieval) share NO Docker network -- they are only ever connected
+# via the bind-mounted ./var/jobs directory, so there is no IP path from the
+# fetcher (which reaches attacker-controlled infrastructure by design) back
+# to the honeypot's session-handling process.
+#
+# One-time setup before `docker compose up`: both services run as a fixed
+# non-root UID (10001), so the bind-mounted host directories must be owned
+# by that UID first:
+#
+#   mkdir -p var/jobs var/quarantine var/logs var/transcripts
+#   sudo chown -R 10001:10001 var
+#
+# Publishing privileged ports (22/23) works directly through Docker's port
+# mapping below -- no setcap needed when deploying this way (unlike the
+# bare-metal instructions in README.md).
+#
+# Both services load configs/riscv64-docker.yaml, identical to
+# configs/riscv64.yaml except `fetcher.mode: queued`. That setting matters:
+# in "queued" mode the honeypot service only enqueues a job file and polls
+# for a result the fetcher service writes back to the same shared
+# ./var/jobs volume -- it never performs the outbound fetch itself. Without
+# it, SessionManager would fetch in-process (fine for `python -m
+# honeypot.main` on one host, but it would defeat the whole point of this
+# two-container split). Swap in configs/riscv32-docker.yaml for the 32-bit
+# persona.
+
+services:
+  honeypot:
+    build: .
+    command: ["honeypot.main", "configs/riscv64-docker.yaml"]
+    restart: unless-stopped
+    ports:
+      - "2222:2222"   # change the left side to "22:2222" for the standard port
+      - "2223:2223"   # change the left side to "23:2223" for the standard port
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./var/jobs:/app/var/jobs
+      - ./var/logs:/app/var/logs
+      - ./var/transcripts:/app/var/transcripts
+    networks:
+      - public
+    # Deliberately no mount of var/quarantine: this service never needs to
+    # read captured samples, and shouldn't be able to.
+
+  fetcher:
+    build: .
+    command: ["honeypot.fetcher.worker", "configs/riscv64-docker.yaml"]
+    restart: unless-stopped
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./var/jobs:/app/var/jobs
+      - ./var/quarantine:/app/var/quarantine
+    networks:
+      - egress
+    # No ports published: nothing ever initiates an inbound connection to
+    # this service.
+
+networks:
+  public:
+    driver: bridge
+  egress:
+    driver: bridge
+    # Has default NAT egress to the internet (needed to actually fetch
+    # attacker-hosted payloads) but is never attached to the `public`
+    # network above, so it has no route to the honeypot service. Harden
+    # further at the host firewall per SAFETY.md guarantee #5 -- block this
+    # network's subnet from reaching your internal/management network
+    # explicitly; don't rely on Docker's defaults alone.

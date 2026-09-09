@@ -1,0 +1,48 @@
+# Sample persona: 64-bit RISC-V (e.g. SiFive HiFive Unmatched / StarFive VisionFive class board)
+persona:
+  arch: riscv64
+  hostname: buildroot
+  kernel_version: "5.10.0"
+  isa: rv64imafdc
+  uarch: "sifive,u74-mc"
+  mmu: sv39
+  hart_count: 4
+  os_release_name: Buildroot
+  os_release_version: "2023.02"
+  ssh_banner: "SiFive RISC-V Linux (buildroot)"
+  telnet_banner: |
+    SiFive RISC-V Linux (buildroot)
+    login: 
+
+listeners:
+  bind_host: "0.0.0.0"
+  ssh_enabled: true
+  ssh_port: 2222
+  telnet_enabled: true
+  telnet_port: 2223
+
+credentials:
+  # accept_any maximizes capture of credential-stuffing attempts (spec 4.1).
+  # Set to false and populate allow_list to restrict to common IoT defaults.
+  accept_any: true
+  allow_list:
+    - {username: root, password: root}
+    - {username: admin, password: admin}
+    - {username: root, password: "12345"}
+    - {username: root, password: xc3511}
+
+fetcher:
+  mode: queued  # required: honeypot and fetcher run as separate containers, see docker-compose.yml
+  quarantine_dir: var/quarantine
+  jobs_dir: var/jobs
+  max_file_size_bytes: 52428800
+  timeout_seconds: 15
+  allowed_protocols: [http, https]
+  verify_tls: false
+
+logging:
+  log_dir: var/logs
+  transcript_dir: var/transcripts
+  json_log_filename: events.jsonl
+  level: INFO
+  forward_url: null

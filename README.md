@@ -92,26 +92,59 @@ anywhere under `honeypot/`.
 ## Deploying safely
 
 **Read `SAFETY.md` first.** The single most important deployment decision is
-where the fetcher runs. For v1/development, `honeypot/session/manager.py`
-awaits the fetch in-process, which is fine on a single isolated VM used only
-for experimentation. For anything facing real attacker traffic:
+where the fetcher runs and which fetch `mode` the config uses. With
+`fetcher.mode: inline` (the default in `configs/riscv64.yaml`/`riscv32.yaml`),
+`honeypot/session/manager.py` awaits the fetch in-process -- fine for a single
+isolated VM used only for experimentation, but the session process itself
+performs the outbound request in that mode. For anything facing real attacker
+traffic, switch to `fetcher.mode: queued` (see `configs/riscv64-docker.yaml`/
+`riscv32-docker.yaml` for a working example) and:
 
 1. Run the session-handling process (this repo's `honeypot.main`) on an
    isolated VM/container with no sensitive network access at all -- assume it
    will be fully compromised in spirit (it accepts arbitrary input by design).
 2. Run the fetcher as a **separate process**, via
-   `python -m honeypot.fetcher.worker configs/riscv64.yaml`, on a host or in a
-   network namespace whose only permitted egress is the public internet (to
-   reach attacker-controlled dropper infrastructure) and which has **no route
-   back** to the honeypot's management/logging/storage network. It only needs
-   write access to the shared `fetcher.jobs_dir` / `fetcher.quarantine_dir`
-   locations.
+   `python -m honeypot.fetcher.worker configs/riscv64-docker.yaml`, on a host
+   or in a network namespace whose only permitted egress is the public
+   internet (to reach attacker-controlled dropper infrastructure) and which
+   has **no route back** to the honeypot's management/logging/storage
+   network. It only needs write access to the shared `fetcher.jobs_dir` /
+   `fetcher.quarantine_dir` locations.
 3. Never expose `var/quarantine/` to anything that opens files for execution.
    Quarantined samples are written `chmod 0440` specifically so that even a
    misconfigured tool can't accidentally run them.
 4. Treat every file under `var/quarantine/` as live malware. Reviewing a
    sample should never mean running it (see "Reviewing captured samples"
    below).
+
+### Deploying with Docker Compose
+
+`docker-compose.yml` implements the two-process split above as two
+containers that share **no Docker network** -- the only channel between them
+is the bind-mounted `./var/jobs` directory, so there is no IP path from the
+fetcher container (which reaches attacker-controlled infrastructure by
+design) back to the honeypot container. This has been built and
+live-tested: a real login → `wget` → quarantine round trip through the
+`honeypot` container, with the actual fetch happening only inside the
+`fetcher` container, and a direct connection attempt from the `honeypot`
+container to the `fetcher` container's IP confirmed to time out.
+
+```
+mkdir -p var/jobs var/quarantine var/logs var/transcripts
+sudo chown -R 10001:10001 var       # both containers run as fixed UID 10001
+docker compose up -d
+docker compose logs -f              # both services' stdout/stderr
+```
+
+This uses `configs/riscv64-docker.yaml` (edit `docker-compose.yml`'s two
+`command:` lines to switch to `riscv32-docker.yaml`). Privileged ports work
+directly through Docker's `ports:` mapping (e.g. change `"2222:2222"` to
+`"22:2222"`) -- no `setcap` needed in this deployment path. See the comments
+at the top of `docker-compose.yml` for the full rationale, and harden the
+`egress` network's actual internet access at your host firewall per point 2
+above -- Docker's network separation here stops the fetcher from reaching
+the honeypot container, but a host firewall is still the right place to
+constrain what the fetcher's egress network can reach on your real network.
 
 ## Reviewing captured samples
 
@@ -162,8 +195,9 @@ honeypot/
   shell/      persona rendering, fake in-memory filesystem, command dispatcher
   fetcher/    isolated fetch+hash+quarantine logic, static ELF detector, job queue
   logging/    JSON event log + raw per-session transcripts
-configs/      sample riscv64 and riscv32 persona configs
+configs/      sample riscv64/riscv32 persona configs, plus -docker variants (fetcher.mode: queued)
 tests/        pytest suite, including the static-analysis safety check
+Dockerfile, docker-compose.yml, .dockerignore   two-container deployment (see "Deploying with Docker Compose")
 ```
 
 `listeners/`, `session/`, `shell/`, `fetcher/`, `logging/`, and `config/` are

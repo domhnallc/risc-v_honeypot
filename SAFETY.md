@@ -34,6 +34,22 @@ requested filename) and a `FetcherConfig` -- it never receives a reference to
 `SessionManager`, the fake shell, or any other session-handling state, so it
 can be lifted out of the session process entirely.
 
+This isolation is only *real* when `fetcher.mode: queued` is set
+(`honeypot/config/schema.py`). In that mode `SessionManager` (honeypot
+session process) only ever calls `enqueue_job()` and polls a shared directory
+for a result file that a separate process writes -- it never imports or calls
+`fetch_and_quarantine` itself, which is exactly what
+`tests/test_session.py::test_queued_mode_never_calls_fetch_and_quarantine_in_process`
+asserts (it monkeypatches `fetch_and_quarantine` to raise if called, then
+proves a full enqueue/claim/result round trip still works). The default
+`fetcher.mode: inline` (used by `configs/riscv64.yaml`/`riscv32.yaml`) instead
+awaits the fetch directly in the session process -- a deliberate development
+convenience for single-process/`python -m honeypot.main` use, not the
+isolation guarantee itself. **Always use `mode: queued` for any deployment
+where the fetcher genuinely runs as a different process/container** --
+`configs/riscv64-docker.yaml`/`riscv32-docker.yaml` and `docker-compose.yml`
+do this.
+
 `honeypot/fetcher/worker.py` is the standalone entry point for running the
 fetcher as a genuinely separate OS process (`python -m honeypot.fetcher.worker
 <config>`), reading jobs from a watched directory (`honeypot/fetcher/queue.py`)

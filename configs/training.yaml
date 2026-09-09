@@ -1,0 +1,49 @@
+# Local training/demo mode: bound to 127.0.0.1 ONLY, never reachable from
+# your LAN or the internet. Use this to poke at the honeypot yourself --
+# pretend to be an attacker over ssh/telnet and watch how it responds --
+# without any of the deployment setup in the README's "Deploying..."
+# sections. See "Training mode" in README.md.
+persona:
+  arch: riscv64
+  hostname: buildroot
+  kernel_version: "5.10.0"
+  isa: rv64imafdc
+  uarch: "sifive,u74-mc"
+  mmu: sv39
+  hart_count: 4
+  os_release_name: Buildroot
+  os_release_version: "2023.02"
+  ssh_banner: "SiFive RISC-V Linux (buildroot)"
+  telnet_banner: |
+    SiFive RISC-V Linux (buildroot)
+    login: 
+
+listeners:
+  bind_host: "127.0.0.1"   # the whole point of this config: never binds anywhere else
+  ssh_enabled: true
+  ssh_port: 2222
+  telnet_enabled: true
+  telnet_port: 2223
+  ssh_host_key_path: var/training/ssh_host_key
+
+credentials:
+  # Accept anything -- one less thing to remember while you're the one
+  # playing attacker.
+  accept_any: true
+  allow_list: []
+
+fetcher:
+  mode: inline   # single process, no separate worker needed for local training
+  quarantine_dir: var/training/quarantine
+  jobs_dir: var/training/jobs
+  max_file_size_bytes: 52428800
+  timeout_seconds: 15
+  allowed_protocols: [http, https]
+  verify_tls: false
+
+logging:
+  log_dir: var/training/logs
+  transcript_dir: var/training/transcripts
+  json_log_filename: events.jsonl
+  level: INFO
+  forward_url: null

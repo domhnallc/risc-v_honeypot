@@ -26,6 +26,10 @@ class ListenerConfig(BaseModel):
     ssh_port: int = 2222
     telnet_enabled: bool = True
     telnet_port: int = 2223
+    # Generated on first run if missing (honeypot/listeners/ssh.py). Kept
+    # config-driven so separate configs (e.g. configs/training.yaml) don't
+    # silently share a host key with each other or with a real deployment.
+    ssh_host_key_path: Path = Path("var/ssh_host_key")
 
 
 class PersonaConfig(BaseModel):

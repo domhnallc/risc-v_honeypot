@@ -15,3 +15,14 @@ var/jobs/*
 !var/quarantine/.gitkeep
 !var/jobs/.gitkeep
 var/ssh_host_key
+
+# same, for the separate var/training/ tree used by configs/training.yaml
+var/training/logs/*
+var/training/transcripts/*
+var/training/quarantine/*
+var/training/jobs/*
+!var/training/logs/.gitkeep
+!var/training/transcripts/.gitkeep
+!var/training/quarantine/.gitkeep
+!var/training/jobs/.gitkeep
+var/training/ssh_host_key

@@ -78,6 +78,62 @@ two sets of ports, or two hosts) lets you compare what droppers serve to
 each architecture. For running the fetcher as a separate, network-isolated
 process instead of in-process, see "Deploying safely" below.
 
+## Training mode
+
+Want to poke at the honeypot yourself -- log in, run commands, trigger a
+fake download -- without any deployment setup? `configs/training.yaml` is
+bound to `127.0.0.1` **only** (never your LAN or the internet, regardless of
+what network you're on) and accepts any username/password, so there's
+nothing to configure first:
+
+```
+python -m honeypot.main configs/training.yaml
+```
+
+In another terminal, play attacker over SSH:
+
+```
+ssh -p 2222 root@127.0.0.1
+```
+
+(any password works; accept the new host-key prompt). Or Telnet:
+
+```
+telnet 127.0.0.1 2223
+```
+
+Things worth trying once you're in, to see how each is handled:
+
+```
+uname -a                              # persona banner
+cat /proc/cpuinfo                     # persona hardware fields
+wget http://example.invalid/x -O m    # download attempt -- logged even though the fetch will fail
+chmod +x m                            # execution attempt: acknowledged silently, nothing actually runs
+./m                                   # same -- logged as file.execution_attempt, never executed
+whatever-nonsense-command             # busybox-style "not found"
+exit
+```
+
+To actually see a successful download-and-quarantine round trip rather than
+a connection failure, serve a real (harmless) file locally in a third
+terminal first:
+
+```
+mkdir -p /tmp/fake-payload && head -c 200 /dev/urandom > /tmp/fake-payload/mal.riscv64
+python3 -m http.server 8000 --directory /tmp/fake-payload --bind 127.0.0.1
+```
+
+then `wget http://127.0.0.1:8000/mal.riscv64 -O mal` from inside the
+honeypot session -- you'll get a busybox-style "saved" response, and the
+file will land in `var/training/quarantine/<sha256>.bin` (mode `0440`) with
+a `.json` sidecar next to it.
+
+Everything lands under `var/training/` (`logs/events.jsonl`,
+`transcripts/<session_id>.jsonl`, `quarantine/`) -- a separate tree from
+`var/`, so training runs never mix with real capture data. `tail -f
+var/training/logs/events.jsonl` in a spare terminal while you type commands
+is the fastest way to see exactly what gets recorded for each action.
+
 ## Test
 
 ```
@@ -348,7 +404,7 @@ honeypot/
   shell/      persona rendering, fake in-memory filesystem, command dispatcher
   fetcher/    isolated fetch+hash+quarantine logic, static ELF detector, job queue
   logging/    JSON event log + raw per-session transcripts
-configs/      sample riscv64/riscv32 persona configs, plus -docker variants (fetcher.mode: queued)
+configs/      sample riscv64/riscv32 persona configs, -docker variants (fetcher.mode: queued), and training.yaml (127.0.0.1-only)
 tests/        pytest suite, including the static-analysis safety check
 Dockerfile, docker-compose.yml, .dockerignore   two-container deployment (see "Deploying with Docker Compose")
 ```

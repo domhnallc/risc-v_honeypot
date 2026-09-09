@@ -32,7 +32,7 @@ async def run(config_path: str) -> None:
 
     servers = []
     if config.listeners.ssh_enabled:
-        ssh_server = await start_ssh_listener(config, event_logger)
+        ssh_server = await start_ssh_listener(config, event_logger, config.listeners.ssh_host_key_path)
         servers.append(ssh_server)
         log.info("SSH listener on %s:%s", config.listeners.bind_host, config.listeners.ssh_port)
     if config.listeners.telnet_enabled:

@@ -109,3 +109,225 @@ def test_mkdir_touch_rm_echo_roundtrip():
 def test_exit_sets_exit_session_flag():
     result = dispatch("exit", _fs(), PersonaConfig(arch="riscv64"))
     assert result.exit_session is True
+
+
+# -- --help behavior ---------------------------------------------------
+
+def test_help_flag_returns_busybox_style_text_for_ls():
+    result = dispatch("ls --help", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.startswith("Usage: ls ")
+    assert "-l" in result.output
+
+
+def test_help_flag_for_wget_shows_usage_instead_of_attempting_download():
+    result = dispatch("wget --help", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.download_request is None
+    assert result.output.startswith("Usage: wget")
+
+
+def test_help_flag_for_chmod_shows_usage_not_execution_attempt():
+    result = dispatch("chmod --help", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.execution_attempt is None
+    assert result.output.startswith("Usage: chmod")
+
+
+def test_cd_help_falls_through_to_real_chdir_error():
+    """cd is a pure ash builtin with no --help of its own in real BusyBox --
+    `cd --help` genuinely tries to chdir into a directory named "--help"."""
+    result = dispatch("cd --help", _fs(), PersonaConfig(arch="riscv64"))
+    assert "--help" in result.output
+    assert "No such file or directory" in result.output
+
+
+# -- ls flags ------------------------------------------------------------
+
+def test_ls_dash_l_long_format_marks_applets_executable():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    result = dispatch("ls -l /bin", fs, persona)
+    lines = result.output.splitlines()
+    wget_line = next(l for l in lines if l.endswith(" wget"))
+    assert wget_line.startswith("-rwxr-xr-x")
+
+
+def test_ls_dash_a_shows_dot_and_dotdot():
+    result = dispatch("ls -a", _fs(), PersonaConfig(arch="riscv64"))
+    entries = result.output.split("  ")
+    assert entries[0] == "."
+    assert entries[1] == ".."
+
+
+def test_ls_dash_1_one_entry_per_line():
+    result = dispatch("ls -1 /bin", _fs(), PersonaConfig(arch="riscv64"))
+    assert "\n" in result.output
+    assert "  " not in result.output
+
+
+def test_ls_combined_flags_la():
+    result = dispatch("ls -la /bin", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.splitlines()[0].startswith("drwxr-xr-x")  # the "." entry
+
+
+# -- cp / mv ---------------------------------------------------------------
+
+def test_cp_copies_file_content():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo hello > /tmp/src", fs, persona)
+    result = dispatch("cp /tmp/src /tmp/dst", fs, persona)
+    assert result.output == ""
+    assert fs.read_file("/tmp/dst") == "hello\n"
+    assert fs.read_file("/tmp/src") == "hello\n"  # source untouched
+
+
+def test_cp_missing_operand():
+    result = dispatch("cp onlyone", _fs(), PersonaConfig(arch="riscv64"))
+    assert "missing file operand" in result.output
+
+
+def test_cp_nonexistent_source_errors():
+    result = dispatch("cp /nope /tmp/x", _fs(), PersonaConfig(arch="riscv64"))
+    assert "cannot stat" in result.output
+
+
+def test_mv_moves_and_removes_source():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo hi > /tmp/a", fs, persona)
+    dispatch("mv /tmp/a /tmp/b", fs, persona)
+    assert fs.read_file("/tmp/b") == "hi\n"
+    assert not fs.exists("/tmp/a")
+
+
+def test_mv_missing_source_errors():
+    result = dispatch("mv /nope /tmp/x", _fs(), PersonaConfig(arch="riscv64"))
+    assert "can't stat" in result.output
+
+
+# -- grep --------------------------------------------------------------
+
+def test_grep_literal_match():
+    result = dispatch("grep root /etc/passwd", _fs(), PersonaConfig(arch="riscv64"))
+    assert "root" in result.output
+
+
+def test_grep_case_insensitive():
+    result = dispatch("grep -i ROOT /etc/passwd", _fs(), PersonaConfig(arch="riscv64"))
+    assert "root" in result.output
+
+
+def test_grep_invert_match():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo one > /tmp/f", fs, persona)
+    result = dispatch("grep -v nomatch /tmp/f", fs, persona)
+    assert "one" in result.output
+
+
+def test_grep_pattern_with_regex_metacharacters_is_treated_literally():
+    """Safety property: '.' etc. must not behave as a regex wildcard --
+    grep here is substring matching only, never a compiled regex engine
+    fed by attacker input (ReDoS avoidance, see _grep_matches)."""
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo 'a.b' > /tmp/f", fs, persona)
+    result = dispatch("grep a.b /tmp/f", fs, persona)
+    assert "a.b" in result.output
+    result_no_match = dispatch("grep axb /tmp/f", fs, persona)
+    assert result_no_match.output == ""  # would match if '.' were a real regex wildcard
+
+
+def test_grep_missing_file():
+    result = dispatch("grep root /nope", _fs(), PersonaConfig(arch="riscv64"))
+    assert "No such file or directory" in result.output
+
+
+# -- sed -----------------------------------------------------------------
+
+def test_sed_simple_substitution():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo hello > /tmp/f", fs, persona)
+    result = dispatch("sed s/hello/goodbye/ /tmp/f", fs, persona)
+    assert result.output == "goodbye"
+    assert fs.read_file("/tmp/f") == "hello\n"  # no -i: source untouched
+
+
+def test_sed_global_flag_replaces_all_occurrences():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo aaa > /tmp/f", fs, persona)
+    result = dispatch("sed s/a/b/g /tmp/f", fs, persona)
+    assert result.output == "bbb"
+
+
+def test_sed_without_global_flag_replaces_first_only():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo aaa > /tmp/f", fs, persona)
+    result = dispatch("sed s/a/b/ /tmp/f", fs, persona)
+    assert result.output == "baa"
+
+
+# -- awk -----------------------------------------------------------------
+
+def test_awk_print_field():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo one two three > /tmp/f", fs, persona)
+    result = dispatch("awk '{print $2}' /tmp/f", fs, persona)
+    assert result.output == "two"
+
+
+def test_awk_unsupported_program_shape_is_a_safe_noop():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    dispatch("echo hi > /tmp/f", fs, persona)
+    result = dispatch("awk 'BEGIN{print \"pwned\"}' /tmp/f", fs, persona)
+    assert result.output == ""
+
+
+# -- networking / misc applets -------------------------------------------
+
+def test_ifconfig_lists_interfaces():
+    result = dispatch("ifconfig", _fs(), PersonaConfig(arch="riscv64"))
+    assert "eth0" in result.output
+    assert "lo" in result.output
+
+
+def test_ip_a_lists_interfaces():
+    result = dispatch("ip a", _fs(), PersonaConfig(arch="riscv64"))
+    assert "eth0" in result.output
+
+
+def test_ip_bare_shows_usage():
+    result = dispatch("ip", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.startswith("Usage: ip")
+
+
+def test_ping_produces_requested_reply_count():
+    result = dispatch("ping -c 2 1.2.3.4", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.count("64 bytes from") == 2
+    assert "2 packets transmitted" in result.output
+
+
+def test_top_returns_static_snapshot():
+    result = dispatch("top", _fs(), PersonaConfig(arch="riscv64"))
+    assert "Mem:" in result.output
+    assert "COMMAND" in result.output
+
+
+def test_vi_silently_no_ops():
+    result = dispatch("vi /etc/passwd", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output == ""
+    assert result.execution_attempt is None
+
+
+def test_mount_bare_shows_fake_table():
+    result = dispatch("mount", _fs(), PersonaConfig(arch="riscv64"))
+    assert "squashfs" in result.output
+
+
+def test_mount_with_args_is_a_silent_noop():
+    result = dispatch("mount /dev/sda1 /mnt", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output == ""

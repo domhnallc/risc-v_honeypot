@@ -7,6 +7,7 @@ what makes cd/ls/cat/mkdir/rm/touch/echo safe to let an attacker drive freely.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from honeypot.config.schema import PersonaConfig
@@ -146,3 +147,55 @@ class FakeFilesystem:
 
     def is_dir(self, path: str) -> bool:
         return isinstance(self._lookup(self._resolve(path)), FakeDir)
+
+    def listdir_nodes(self, path: str | None = None) -> "dict[str, FakeDir | FakeFile] | str":
+        """Like listdir(), but returns {name: node} instead of just names --
+        used by `ls -l` to distinguish files from directories per entry."""
+        target = self._resolve(path) if path else self.cwd_path
+        node = self._lookup(target)
+        if isinstance(node, FakeDir):
+            return dict(node.entries)
+        if node is None:
+            return f"ls: {path}: No such file or directory"
+        return {(path or ""): node}
+
+    def copy_node(self, src: str, dst: str) -> str | None:
+        """cp: deep-copies src onto dst. Returns a busybox-style error
+        message on failure, or None on success. Pure in-memory object graph
+        copy -- there's no real inode/permission model to preserve."""
+        node = self._lookup(self._resolve(src))
+        if node is None:
+            return f"cp: cannot stat '{src}': No such file or directory"
+        dst_parts = self._resolve(dst)
+        dst_node = self._lookup(dst_parts)
+        if isinstance(dst_node, FakeDir):
+            # cp file existing_dir/ -> place inside existing_dir under src's basename
+            dst_node.entries[self._resolve(src)[-1]] = deepcopy(node)
+            return None
+        parent = self._lookup(dst_parts[:-1])
+        if not isinstance(parent, FakeDir):
+            return f"cp: cannot create '{dst}': No such file or directory"
+        parent.entries[dst_parts[-1]] = deepcopy(node)
+        return None
+
+    def move_node(self, src: str, dst: str) -> str | None:
+        """mv: re-parents the node object (no copy needed) and removes it
+        from its original location. Returns a busybox-style error message on
+        failure, or None on success."""
+        src_parts = self._resolve(src)
+        src_parent = self._lookup(src_parts[:-1])
+        node = self._lookup(src_parts)
+        if node is None or not isinstance(src_parent, FakeDir):
+            return f"mv: can't stat '{src}': No such file or directory"
+        dst_parts = self._resolve(dst)
+        dst_node = self._lookup(dst_parts)
+        if isinstance(dst_node, FakeDir):
+            dst_node.entries[src_parts[-1]] = node
+            del src_parent.entries[src_parts[-1]]
+            return None
+        parent = self._lookup(dst_parts[:-1])
+        if not isinstance(parent, FakeDir):
+            return f"mv: can't stat '{dst}': No such file or directory"
+        parent.entries[dst_parts[-1]] = node
+        del src_parent.entries[src_parts[-1]]
+        return None

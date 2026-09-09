@@ -93,10 +93,18 @@ Telnet Listener (asyncio)┘         │
   `output`, an optional `download_request`, an optional `execution_attempt` (set for
   `chmod +x`, `./file`, `sh file`, `/bin/busybox file` — acknowledged with a plausible fake
   success but never touching real permissions or running anything), and `exit_session`.
+  A `--help` check runs first for any command with an entry in
+  `honeypot/shell/help_text.py` (BusyBox's own applet help text, not GNU man pages) —
+  deliberately excluding `cd`/`exit`/`logout`, since those are ash builtins with no real
+  `--help` handling, so `cd --help` instead falls through to a genuine "No such file or
+  directory" (it tries to chdir into a directory literally named `--help`). `grep`/`sed`/
+  `awk` are implemented with plain substring/fixed-pattern matching only — never a regex
+  compiled from attacker text — see SAFETY.md guarantee #1's ReDoS note for why.
 - **`honeypot/shell/filesystem.py`** (`FakeFilesystem`) is a pure in-memory dict tree
   seeded per-persona (`/proc/cpuinfo`, `/proc/version`, `/etc/os-release`, a fake `/bin`
   busybox-applet listing) — there is no path from any operation here to the real host
-  filesystem.
+  filesystem. `copy_node`/`move_node` back `cp`/`mv` (object-graph copy/reparent, no real
+  inode model); `listdir_nodes` backs `ls -l`'s per-entry file-vs-directory distinction.
 - **`honeypot/fetcher/`**: `queue.py` defines `DownloadJob`/`make_job` and the file-based
   atomic job queue (`enqueue_job`/`claim_pending_jobs`, used by the standalone worker, not
   by the in-process v1 path); `elf.py` is the static detector; `fetcher.py` streams the

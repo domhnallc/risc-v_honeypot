@@ -164,6 +164,141 @@ Two deployment-specific notes:
 - **Docker Compose** (see "Deploying with Docker Compose" above): the table above maps directly to `docker-compose.yml`'s `ports:` (only on the `honeypot` service) and the `public`/`egress` network split -- there is nothing else to open at the host firewall for the containers themselves. Still add host-level egress filtering on whatever interface backs the `egress` Docker network if your organization requires firewall enforcement independent of Docker's own network isolation (SAFETY.md guarantee #5 is explicit that this should not depend on Docker/app-level isolation alone).
 - **Bare-metal two-host split**: if `fetcher.jobs_dir`/`fetcher.quarantine_dir` are shared between the session and fetcher hosts over the network (NFS, SSHFS, rsync-over-SSH, etc. -- the codebase itself doesn't implement this, it's a filesystem-sharing choice you make at deploy time), open *that* transport's port (e.g. `2049/tcp` for NFS, `22/tcp` for SSHFS/rsync) only on a private link between the two honeypot hosts, never on a route reachable from the internet or from the fetcher's dropper-facing egress network.
 
+## Deploying on DigitalOcean
+
+Two concrete walkthroughs, corresponding to the two isolation levels
+described in "Deploying safely" above. Both assume Ubuntu 24.04 x64
+Droplets and a repo clone at `~/risc-v_honeypot` on each host.
+
+### Option A: single Droplet (cheap, Docker-network isolation only)
+
+1. **Create the Droplet**: Basic plan, 1 vCPU / 1GB RAM is enough (the fake
+   shell and fetcher are lightweight; go to 2GB if you want headroom),
+   Ubuntu 24.04 LTS, any region.
+2. **Move real admin SSH off port 22** so the honeypot can use it for bait
+   (skip this if you're fine leaving the SSH bait on `2222`):
+   ```
+   sudo sed -i 's/^#\?Port .*/Port 2200/' /etc/ssh/sshd_config
+   sudo systemctl restart ssh
+   ```
+   Test the new port works in a *second* terminal before closing the
+   firewall on 22 -- don't lock yourself out.
+3. **Install Docker**:
+   ```
+   curl -fsSL https://get.docker.com | sudo sh
+   ```
+4. **Get the code onto the Droplet** (`git clone` your repo, or `scp -r`
+   this directory) to `~/risc-v_honeypot`, then:
+   ```
+   cd ~/risc-v_honeypot
+   mkdir -p var/jobs var/quarantine var/logs var/transcripts
+   sudo chown -R 10001:10001 var
+   ```
+5. **If you moved SSH to 2200**, edit `docker-compose.yml`'s `honeypot`
+   service to publish the real ports:
+   ```yaml
+       ports:
+         - "22:2222"
+         - "23:2223"
+   ```
+6. **Configure the DigitalOcean Cloud Firewall** (Networking -> Firewalls in
+   the control panel, or `doctl compute firewall create`) and attach it to
+   the Droplet:
+   - Inbound: TCP `22` from `0.0.0.0/0, ::/0` (SSH bait -- or `2222` if you
+     skipped step 2/5)
+   - Inbound: TCP `23` from `0.0.0.0/0, ::/0` (Telnet bait -- or `2223`)
+   - Inbound: TCP `2200` (or whatever you chose) from **your own IP only**
+     (real admin SSH)
+   - Outbound: leave DigitalOcean's default "allow all" -- the fetcher
+     needs broad outbound TCP per "Firewall and ports" above, and DO
+     firewalls are inbound-focused by default (no outbound rules = allow
+     all).
+7. **Bring it up**:
+   ```
+   sudo docker compose build
+   sudo docker compose up -d
+   sudo docker compose logs -f
+   ```
+8. **Verify**: `sudo docker compose ps`, then from your own machine try
+   logging into the bait ports and confirm `var/logs/events.jsonl` fills in.
+9. **Pull samples off periodically** with `rsync`/`scp` from your own
+   machine (`sudo` is needed to read `var/quarantine/` locally on the
+   Droplet, since it's owned by UID 10001 at mode `0440`):
+   ```
+   rsync -avz -e ssh root@<droplet-ip>:~/risc-v_honeypot/var/quarantine/ ./quarantine/
+   ```
+
+Isolation here is Docker-network-level only (verified earlier in this
+project: the `honeypot` container cannot reach the `fetcher` container's
+IP) -- both containers still share the same Droplet, kernel, and physical
+network interface. Good enough for the spec's v1 posture; for the stronger
+guarantee, use Option B.
+
+### Option B: two Droplets in a VPC (matches SAFETY.md guarantee #5)
+
+Runs `honeypot` and `fetcher` as separate services on separate Droplets, so
+there is no shared kernel or NIC between them at all -- the only link is one
+NFS export, opened only between their private VPC IPs.
+
+1. **Create a VPC** (Networking -> VPC) in one region, then **create two
+   Droplets in it** -- `honeypot-session` and `honeypot-fetcher` -- same
+   region, same VPC, each gets a private IP automatically (e.g.
+   `10.116.0.2`/`10.116.0.3`). Repeat steps 1-4 from Option A on **both**
+   Droplets (Docker install, repo clone to `~/risc-v_honeypot`, `mkdir -p
+   var/... && chown -R 10001:10001 var`). Only `honeypot-session` needs the
+   SSH-port-move from Option A step 2 (it's the only one with a public bait
+   surface).
+2. **Share `var/jobs` between them over the private network.**
+   `honeypot-session` exports it via NFS; `honeypot-fetcher` mounts it as a
+   client -- this direction means only `honeypot-fetcher` ever initiates a
+   connection, so `honeypot-fetcher` still needs **zero** inbound rules of
+   its own.
+   - On `honeypot-session`:
+     ```
+     sudo apt install -y nfs-kernel-server
+     echo "$HOME/risc-v_honeypot/var/jobs <fetcher-private-ip>(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
+     sudo exportfs -ra
+     sudo systemctl enable --now nfs-kernel-server
+     ```
+   - On `honeypot-fetcher`:
+     ```
+     sudo apt install -y nfs-common
+     sudo mkdir -p ~/risc-v_honeypot/var/jobs
+     echo "<session-private-ip>:$HOME/risc-v_honeypot/var/jobs $HOME/risc-v_honeypot/var/jobs nfs rw,auto 0 0" | sudo tee -a /etc/fstab
+     sudo mount -a
+     ```
+   `var/quarantine` stays **local** to `honeypot-fetcher` only -- it's never
+   shared back, matching the existing design where the session side never
+   touches captured samples.
+3. **Cloud Firewall for `honeypot-session`**: same three inbound rules as
+   Option A step 6 (SSH bait, Telnet bait, your IP on the admin SSH port).
+   Add nothing for NFS -- `honeypot-fetcher` connects to it as a client, so
+   the rule goes on `honeypot-session`'s firewall as an **inbound** allow for
+   TCP `2049` (and `111` for NFS's portmapper) from `honeypot-fetcher`'s
+   private IP only. VPC private IPs aren't internet-routable regardless, so
+   this is already unreachable from the public internet.
+4. **Cloud Firewall for `honeypot-fetcher`**: no inbound rules at all
+   (leave DO's default-deny for anything not explicitly allowed); outbound
+   left at DO's default allow-all, per "Firewall and ports" above.
+5. **Bring each service up on its own Droplet** (build first -- each
+   Droplet builds its own local image from the same Dockerfile):
+   ```
+   # on honeypot-session:
+   sudo docker compose build honeypot
+   sudo docker compose up -d honeypot
+
+   # on honeypot-fetcher:
+   sudo docker compose build fetcher
+   sudo docker compose up -d fetcher
+   ```
+   (`docker-compose.yml` defines both services in one file; `up -d
+   <service>` starts only the one you name -- the unused service's network
+   still gets created but nothing runs on it.)
+6. **Verify**: watch `sudo docker compose logs -f` on both; confirm a test
+   `wget` from the bait shell produces a job file in
+   `~/risc-v_honeypot/var/jobs` on `honeypot-session` and a quarantined file
+   appears in `~/risc-v_honeypot/var/quarantine` on `honeypot-fetcher`.
+
 ## Reviewing captured samples
 
 Each quarantined file `var/quarantine/<sha256>.bin` has a JSON sidecar

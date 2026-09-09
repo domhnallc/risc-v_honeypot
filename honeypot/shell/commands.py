@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import textwrap
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -72,6 +73,30 @@ _FAKE_TOP_OUTPUT = (
     "    1     0 root     S     1204   0%   0% init\n"
     "   84     1 root     S     1204   0%   0% -ash"
 )
+
+def _busybox_banner() -> str:
+    """`busybox` invoked bare (or with --help): version banner + the same
+    applet list ls /bin shows, so the two never drift out of sync -- both
+    are generated from persona_render.bin_listing()."""
+    functions_block = "\n".join(
+        f"\t{line}" for line in textwrap.wrap(", ".join(sorted(persona_render.bin_listing())), width=68)
+    )
+    return (
+        "BusyBox v1.36.1 (2023-06-02 16:00:00 UTC) multi-call binary.\n"
+        "BusyBox is copyrighted by many authors between 1998-2015.\n"
+        "Licensed under GPLv2. See source distribution for detailed\n"
+        "copyright notices.\n\n"
+        "Usage: busybox [function [arguments]...]\n"
+        "   or: busybox --list[-full]\n"
+        "   or: function [arguments]...\n\n"
+        "\tBusyBox is a multi-call binary that combines many common Unix\n"
+        "\tutilities into a single executable.  Most people will create a\n"
+        "\tlink to busybox for each function they wish to use and BusyBox\n"
+        "\twill act like whatever it was invoked as.\n\n"
+        "Currently defined functions:\n"
+        f"{functions_block}"
+    )
+
 
 _FAKE_MOUNT_OUTPUT = (
     "/dev/root on / type squashfs (ro,relatime)\n"
@@ -181,9 +206,19 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
     tokens = _tokenize(stripped)
     cmd, args = tokens[0], tokens[1:]
 
-    # busybox wget/tftp/curl are commonly invoked as `busybox wget ...`
-    if cmd == "busybox" and args:
-        cmd, args = args[0], args[1:]
+    # busybox wget/tftp/curl are commonly invoked as `busybox wget ...`, but
+    # `busybox` alone (or with its own --help/--list flags) has real output
+    # of its own -- only unwrap to "busybox <applet> ..." when the first arg
+    # actually looks like an applet name, not one of busybox's own flags.
+    if cmd == "busybox":
+        if not args or args[0] == "--help":
+            return CommandResult(output=_busybox_banner())
+        if args[0] == "--list":
+            return CommandResult(output="\n".join(sorted(persona_render.bin_listing())))
+        if args[0] == "--list-full":
+            return CommandResult(output="\n".join(f"/bin/{a}" for a in sorted(persona_render.bin_listing())))
+        if not args[0].startswith("-"):
+            cmd, args = args[0], args[1:]
 
     if "--help" in args and cmd in HELP_TEXT:
         return CommandResult(output=HELP_TEXT[cmd])

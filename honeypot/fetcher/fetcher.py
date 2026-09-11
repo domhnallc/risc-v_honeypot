@@ -84,8 +84,20 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
 
     digest = sha256.hexdigest()
     final_path = quarantine_dir / f"{digest}.bin"
-    os.replace(tmp_path, final_path)
-    os.chmod(final_path, 0o440)  # read-only, non-executable from this point on
+    sidecar = final_path.with_suffix(".json")
+
+    # An identical payload (same sha256) may already be quarantined from an
+    # earlier fetch, with its .bin/.json chmod 0o440 per guarantee #3
+    # ("quarantine, don't touch"). Re-fetching it must not try to overwrite
+    # that read-only sidecar below -- that raises PermissionError, which
+    # previously went uncaught and killed the whole session. Treat a hash
+    # already on file as a successful capture without re-touching it.
+    already_quarantined = final_path.exists()
+    if already_quarantined:
+        tmp_path.unlink(missing_ok=True)
+    else:
+        os.replace(tmp_path, final_path)
+        os.chmod(final_path, 0o440)  # read-only, non-executable from this point on
 
     detected = elf.detect(final_path.read_bytes()[:64])
     arch_mismatch = None
@@ -106,22 +118,22 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         quarantine_path=str(final_path),
     )
 
-    sidecar = final_path.with_suffix(".json")
-    sidecar.write_text(json.dumps({
-        "session_id": job.session_id,
-        "src_ip": job.src_ip,
-        "url": job.url,
-        "protocol": job.protocol,
-        "requested_filename": job.requested_filename,
-        "timestamp": time.time(),
-        "size_bytes": size,
-        "sha256": digest,
-        "md5": result.md5,
-        "detected_type": result.detected_type,
-        "detected_bitness": result.detected_bitness,
-        "detected_machine": result.detected_machine,
-        "arch_mismatch": arch_mismatch,
-    }, indent=2))
-    os.chmod(sidecar, 0o440)
+    if not already_quarantined:
+        sidecar.write_text(json.dumps({
+            "session_id": job.session_id,
+            "src_ip": job.src_ip,
+            "url": job.url,
+            "protocol": job.protocol,
+            "requested_filename": job.requested_filename,
+            "timestamp": time.time(),
+            "size_bytes": size,
+            "sha256": digest,
+            "md5": result.md5,
+            "detected_type": result.detected_type,
+            "detected_bitness": result.detected_bitness,
+            "detected_machine": result.detected_machine,
+            "arch_mismatch": arch_mismatch,
+        }, indent=2))
+        os.chmod(sidecar, 0o440)
 
     return result

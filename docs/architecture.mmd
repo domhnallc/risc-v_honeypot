@@ -1,8 +1,9 @@
 %% Source for README.md's "Architecture" diagram (docs/architecture.png).
 %% Re-render after editing:
-%%   npx -y @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -b white -s 2
-%% (-s 2 for a crisp, non-blurry image on a retina/high-DPI display; -b white
-%% because the default transparent background looks broken on GitHub's dark theme)
+%%   npx -y @mermaid-js/mermaid-cli -i docs/architecture.mmd -o docs/architecture.png -b white -s 2 -t neutral
+%% (-t neutral for the grayscale theme the current PNG uses; -s 2 for a
+%% crisp, non-blurry image on a retina/high-DPI display; -b white because
+%% the default transparent background looks broken on GitHub's dark theme)
 flowchart TD
     Attacker(("Attacker / scanner"))
     Internet(("Internet\n(dropper infra)"))

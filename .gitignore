@@ -33,6 +33,6 @@ var/dashboard.html
 var/training/dashboard.html
 *.mmdb
 configs/geo_lite_key
-# the extracted GeoLite2 download itself (tools/geo/ is otherwise just our
-# own small bundled world_outline.json map asset)
-tools/geo/GeoLite2-City_*/
+# the extracted GeoLite2 download itself, wherever it's unpacked (tools/geo/
+# is otherwise just our own small bundled world_outline.json map asset)
+GeoLite2-City_*/

@@ -7,21 +7,60 @@ what makes cd/ls/cat/mkdir/rm/touch/echo safe to let an attacker drive freely.
 """
 from __future__ import annotations
 
+import random
 from copy import deepcopy
 from dataclasses import dataclass, field
 
 from honeypot.config.schema import PersonaConfig
 from honeypot.shell import persona as persona_render
 
+# A naive fake filesystem showing e.g. "[busybox applet]" for `cat /bin/ls`
+# is a one-command giveaway -- real dropper scripts routinely cat/hash /bin
+# binaries before trusting a host. This is a deterministic, terminal-safe
+# stand-in for real ELF bytes (an ELF magic prefix + pseudo-random low-ASCII
+# control characters, never NUL/newline so it can't confuse splitlines()-
+# based commands or embed literal zero bytes): it looks like garbled binary
+# content rather than empty placeholder text. Generated once per process
+# (not per session) because a real binary's bytes don't change between
+# reboots of the same device either -- if this varied per session, hashing
+# it twice would itself be a tell.
+_BUSYBOX_SIZE_BYTES = 934128  # typical size of a static-linked BusyBox build on a small embedded target
+_BUSYBOX_SAMPLE_BYTES = 4096  # enough to look like real binary content when cat'd; the full size is only used for ls -l's size column
+_busybox_sample_cache: str | None = None
+
+
+def _busybox_binary_sample() -> str:
+    global _busybox_sample_cache
+    if _busybox_sample_cache is None:
+        rng = random.Random(b"riscv-honeypot-busybox-sample-v1")
+        pool = bytes(b for b in range(1, 0x80) if b not in (0x0A, 0x00))
+        body = bytes(rng.choice(pool) for _ in range(_BUSYBOX_SAMPLE_BYTES - 4))
+        _busybox_sample_cache = "\x7fELF" + body.decode("ascii")
+    return _busybox_sample_cache
+
 
 @dataclass
 class FakeFile:
     content: str = ""
+    # Lets a file display a realistic ls -l size without actually storing
+    # that many characters (see _busybox_binary_sample above). None means
+    # "just use len(content)".
+    size_override: int | None = None
+
+
+@dataclass
+class FakeSymlink:
+    """A real BusyBox install has one real ELF (busybox) with every applet
+    name symlinked to it -- `cat`/`ls -l` on an applet should show the
+    *target's* content/a symlink line, not its own separate fake file. Only
+    resolved one level, within the same parent directory, which is all the
+    symlinks this codebase creates need."""
+    target: str
 
 
 @dataclass
 class FakeDir:
-    entries: dict[str, "FakeDir | FakeFile"] = field(default_factory=dict)
+    entries: dict[str, "FakeDir | FakeFile | FakeSymlink"] = field(default_factory=dict)
 
 
 class FakeFilesystem:
@@ -45,9 +84,11 @@ class FakeFilesystem:
 
     def _seed(self) -> None:
         bin_dir = self._mkdirs("bin")
+        bin_dir.entries.setdefault(
+            "busybox", FakeFile(_busybox_binary_sample(), size_override=_BUSYBOX_SIZE_BYTES)
+        )
         for applet in persona_render.bin_listing():
-            bin_dir.entries.setdefault(applet, FakeFile("[busybox applet]"))
-        bin_dir.entries.setdefault("busybox", FakeFile("[ELF executable]"))
+            bin_dir.entries.setdefault(applet, FakeSymlink("busybox"))
         self._mkdirs("usr", "bin")
 
         proc_dir = self._mkdirs("proc")
@@ -81,8 +122,8 @@ class FakeFilesystem:
             base = ["root"]
         return base
 
-    def _lookup(self, parts: list[str]) -> "FakeDir | FakeFile | None":
-        node: FakeDir | FakeFile = self.root
+    def _lookup(self, parts: list[str]) -> "FakeDir | FakeFile | FakeSymlink | None":
+        node: FakeDir | FakeFile | FakeSymlink = self.root
         for part in parts:
             if part == "root":
                 continue
@@ -91,6 +132,15 @@ class FakeFilesystem:
             node = node.entries.get(part)  # type: ignore[assignment]
             if node is None:
                 return None
+        return node
+
+    def _resolve_symlink(self, node: "FakeDir | FakeFile | FakeSymlink | None",
+                          parent_parts: list[str]) -> "FakeDir | FakeFile | None":
+        seen = 0
+        while isinstance(node, FakeSymlink) and seen < 8:
+            parent = self._lookup(parent_parts)
+            node = parent.entries.get(node.target) if isinstance(parent, FakeDir) else None
+            seen += 1
         return node
 
     def cwd_display(self) -> str:
@@ -119,7 +169,7 @@ class FakeFilesystem:
 
     def read_file(self, path: str) -> str | None:
         target = self._resolve(path)
-        node = self._lookup(target)
+        node = self._resolve_symlink(self._lookup(target), target[:-1])
         if isinstance(node, FakeFile):
             return node.content
         return None
@@ -148,7 +198,7 @@ class FakeFilesystem:
     def is_dir(self, path: str) -> bool:
         return isinstance(self._lookup(self._resolve(path)), FakeDir)
 
-    def listdir_nodes(self, path: str | None = None) -> "dict[str, FakeDir | FakeFile] | str":
+    def listdir_nodes(self, path: str | None = None) -> "dict[str, FakeDir | FakeFile | FakeSymlink] | str":
         """Like listdir(), but returns {name: node} instead of just names --
         used by `ls -l` to distinguish files from directories per entry."""
         target = self._resolve(path) if path else self.cwd_path

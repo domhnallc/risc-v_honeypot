@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from honeypot.config.schema import PersonaConfig
 from honeypot.shell import persona as persona_render
-from honeypot.shell.filesystem import FakeDir, FakeFilesystem
+from honeypot.shell.filesystem import FakeDir, FakeFilesystem, FakeSymlink
 from honeypot.shell.help_text import HELP_TEXT
 
 _DOWNLOAD_COMMANDS = {"wget", "curl", "tftp"}
@@ -236,7 +236,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
         # purpose. Logged as an execution_attempt per spec sec 4.3.
         return CommandResult(output="", execution_attempt=f"chmod {' '.join(args)}".strip())
 
-    if cmd in ("sh", "/bin/busybox") or cmd.startswith("./") or cmd.startswith("/"):
+    if cmd in ("sh", "ash", "/bin/busybox") or cmd.startswith("./") or cmd.startswith("/"):
         return CommandResult(output="", execution_attempt=stripped)
 
     if cmd == "cd":
@@ -268,9 +268,20 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
                 node = nodes[name]
                 if isinstance(node, FakeDir):
                     lines.append(f"drwxr-xr-x    2 root     root          4096 Jan  1  2024 {name}")
+                elif isinstance(node, FakeSymlink):
+                    # Real BusyBox installs: one real ELF (busybox), every
+                    # applet a symlink to it -- shown as its own line type,
+                    # sized as the target string's length like a real symlink.
+                    lines.append(
+                        f"lrwxrwxrwx    1 root     root     {len(node.target):>8} "
+                        f"Jan  1  2024 {name} -> {node.target}"
+                    )
                 else:
                     perms = "-rwxr-xr-x" if name in applets else "-rw-r--r--"
-                    size = len(node.content.encode()) if node.content else 0
+                    if node.size_override is not None:
+                        size = node.size_override
+                    else:
+                        size = len(node.content.encode()) if node.content else 0
                     lines.append(f"{perms}    1 root     root     {size:>8} Jan  1  2024 {name}")
             return CommandResult(output="\n".join(lines))
         if "1" in flags:

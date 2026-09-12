@@ -64,6 +64,15 @@ def test_sh_execution_is_logged():
     assert result.execution_attempt == "sh mal"
 
 
+def test_bare_ash_does_not_report_not_found():
+    # ash is advertised in the busybox applet list (ls /bin, busybox
+    # --list) and is the name of the shell you're already in -- it must
+    # not be the one listed applet that fails to run.
+    result = dispatch("ash", _fs(), PersonaConfig(arch="riscv64"))
+    assert "not found" not in result.output
+    assert result.execution_attempt == "ash"
+
+
 def test_unknown_command_returns_busybox_style_error():
     result = dispatch("frobnicate --now", _fs(), PersonaConfig(arch="riscv64"))
     assert result.output == "-ash: frobnicate: not found"
@@ -141,13 +150,33 @@ def test_cd_help_falls_through_to_real_chdir_error():
 
 # -- ls flags ------------------------------------------------------------
 
-def test_ls_dash_l_long_format_marks_applets_executable():
+def test_ls_dash_l_long_format_shows_applets_as_symlinks_to_busybox():
+    # Real BusyBox: one real ELF (busybox), every applet a symlink to it --
+    # not each applet as its own separate "executable" file (a one-command
+    # honeypot tell: cat'ing/sizing an applet should show busybox's content,
+    # not placeholder text at a suspiciously uniform tiny size).
     fs = _fs()
     persona = PersonaConfig(arch="riscv64")
     result = dispatch("ls -l /bin", fs, persona)
     lines = result.output.splitlines()
-    wget_line = next(l for l in lines if l.endswith(" wget"))
-    assert wget_line.startswith("-rwxr-xr-x")
+    wget_line = next(l for l in lines if l.endswith(" wget -> busybox"))
+    assert wget_line.startswith("lrwxrwxrwx")
+    busybox_line = next(l for l in lines if l.endswith(" busybox") and "->" not in l)
+    assert busybox_line.startswith("-rwxr-xr-x")
+
+
+def test_cat_on_bin_applet_shows_busybox_content_not_placeholder_text():
+    # cat/hashing a /bin binary is one of the most common dropper checks
+    # before it trusts a host -- neither the applet nor busybox itself
+    # should print readable placeholder English.
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    wget_content = dispatch("cat /bin/wget", fs, persona).output
+    busybox_content = dispatch("cat /bin/busybox", fs, persona).output
+    assert wget_content == busybox_content  # wget is a symlink to busybox
+    assert "busybox applet" not in wget_content
+    assert "ELF executable" not in wget_content
+    assert wget_content.startswith("\x7fELF")
 
 
 def test_ls_dash_a_shows_dot_and_dotdot():

@@ -7,6 +7,79 @@ ever executing them**. See `riscv-honeypot-spec.md` for the full design spec
 this implementation follows, and `SAFETY.md` for the non-negotiable safety
 guarantees and how the code enforces them.
 
+## Architecture
+
+```mermaid
+flowchart TD
+    Attacker(("Attacker / scanner"))
+    Internet(("Internet\n(dropper infra)"))
+
+    subgraph AttackerFacing["Attacker-facing process (session handling)"]
+        SSH["SSH Listener\n(asyncssh)"]
+        TEL["Telnet Listener\n(asyncio)"]
+        LIM["ConnectionLimiter\n(per-source-IP cap)"]
+        SM["SessionManager"]
+        CRED["CredentialPolicy\n(wordlists + allow_list)"]
+        FS["FakeFilesystem\n(in-memory only)"]
+        DISP["dispatch()\nhoneypot/shell/commands.py"]
+        EVT["EventLogger"]
+        TRW["TranscriptWriter"]
+    end
+
+    subgraph FetcherProc["Isolated fetcher (separate process/container in prod)"]
+        FAQ["fetch_and_quarantine()"]
+        SSRFG["SafeResolver\n(SSRF guard: blocks\nprivate/loopback/link-local)"]
+        ELF["elf.py\nstatic ELF/type detector"]
+        WORKER["fetcher/worker.py\n(standalone entrypoint, queued mode)"]
+    end
+
+    subgraph Storage["var/ (on disk)"]
+        EVTLOG[("events.jsonl")]
+        TRANS[("per-session\ntranscripts")]
+        QUAR[("quarantine/\nsha256.bin + .json, chmod 0440")]
+    end
+
+    subgraph Reporting["Reporting (standalone, read-only)"]
+        DASH["dashboard.py"]
+        GEODB[("GeoLite2-City.mmdb\n(optional, operator-supplied)")]
+        HTML["dashboard.html"]
+    end
+
+    Attacker -->|SSH :2222| SSH
+    Attacker -->|Telnet :2223| TEL
+    SSH --> LIM
+    TEL --> LIM
+    LIM -->|reject if over cap| SM
+    SM --> CRED
+    SM --> FS
+    SM --> DISP
+    DISP --> FS
+    SM --> EVT
+    SM --> TRW
+    EVT --> EVTLOG
+    TRW --> TRANS
+
+    SM -->|"wget/curl/tftp (inline mode)"| FAQ
+    SM -->|"queued mode: enqueue job"| WORKER
+    WORKER --> FAQ
+    FAQ --> SSRFG
+    SSRFG -->|allowed public destinations only| Internet
+    FAQ --> ELF
+    FAQ --> QUAR
+
+    EVTLOG --> DASH
+    QUAR --> DASH
+    GEODB --> DASH
+    DASH --> HTML
+```
+
+`AttackerFacing` and `FetcherProc` are two separate OS processes in production
+(`fetcher.mode: queued` + `docker-compose.yml`, see "Deploying safely" below)
+with no network route between them -- the only thing they share is the
+`var/jobs/` file-based queue (not shown above; see `SAFETY.md` guarantee #2).
+`Reporting` is a separate, read-only tool you run on demand; it's never
+imported by or running alongside the listeners.
+
 ## Installation
 
 Requires Python 3.11+ (the codebase uses `X | Y` union type hints and

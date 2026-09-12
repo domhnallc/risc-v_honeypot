@@ -90,3 +90,29 @@ def test_render_map_produces_valid_svg_with_points():
     assert svg.startswith("<svg")
     assert svg.count("<circle") == 2
     assert "<path" in svg
+
+
+def test_off_wordlist_logins_are_collected_and_shown():
+    events = _events(
+        {"timestamp": "2026-01-01T00:00:00Z", "event": "login.failed", "src_ip": "1.2.3.4",
+         "username": "zzz_probe", "password": "zzz_probe",
+         "username_known": False, "password_known": False},
+        {"timestamp": "2026-01-01T00:00:01Z", "event": "login.success", "src_ip": "5.6.7.8",
+         "username": "root", "password": "123456",
+         "username_known": True, "password_known": True},
+    )
+    report = Report(events)
+    assert len(report.off_list_logins) == 1
+    assert report.off_list_logins[0]["username"] == "zzz_probe"
+    out = render_html(report, GeoLookup(None))
+    assert "zzz_probe" in out
+    assert "Credential attempts not on the known wordlist (1)" in out
+
+
+def test_off_wordlist_section_explains_itself_when_not_configured():
+    events = _events(
+        {"timestamp": "2026-01-01T00:00:00Z", "event": "login.failed", "src_ip": "1.2.3.4",
+         "username": "root", "password": "root", "username_known": None, "password_known": None},
+    )
+    out = render_html(Report(events), GeoLookup(None))
+    assert "No username/password wordlist configured" in out

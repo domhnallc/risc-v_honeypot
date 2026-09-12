@@ -22,7 +22,17 @@ listeners:
   telnet_port: 2223
 
 credentials:
-  accept_any: true
+  # accept_any=true (literally any credential succeeds) is itself a
+  # honeypot tell, per the pentest note in CLAUDE.md -- a login is now
+  # accepted only when the username and password each independently
+  # appear in a real-world-observed wordlist, which still captures the
+  # overwhelming majority of scanner traffic while rejecting arbitrary
+  # probe strings. allow_list stays as an always-accepted fast path for
+  # exact pairs worth guaranteeing (e.g. Mirai's xc3511, which a general
+  # password list doesn't contain).
+  accept_any: false
+  username_wordlist_path: configs/SSH-usernames_1000_14d_2026-08_LureScope.txt
+  password_wordlist_path: configs/100k-most-used-passwords-NCSC.txt
   allow_list:
     - {username: root, password: root}
     - {username: admin, password: admin}

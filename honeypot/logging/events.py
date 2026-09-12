@@ -58,10 +58,17 @@ class EventLogger:
                   duration_seconds=duration_seconds, reason=reason)
 
     def login_attempt(self, session_id: str, username: str, password: str,
-                       accepted: bool, src_ip: str) -> None:
+                       accepted: bool, src_ip: str,
+                       username_known: bool | None = None,
+                       password_known: bool | None = None) -> None:
+        # username_known/password_known: whether each side appeared in the
+        # configured wordlists (None when no wordlist is configured at
+        # all) -- lets the dashboard flag credential pairs a scanner tried
+        # that aren't part of any known common-credential list, regardless
+        # of whether the login was accepted.
         self.log("login.success" if accepted else "login.failed",
                   session_id=session_id, username=username, password=password,
-                  src_ip=src_ip)
+                  src_ip=src_ip, username_known=username_known, password_known=password_known)
 
     def command_input(self, session_id: str, raw: str, command: str, args: list[str]) -> None:
         self.log("command.input", session_id=session_id, raw=raw,

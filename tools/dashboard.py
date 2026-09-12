@@ -78,6 +78,7 @@ class Report:
         self.password_counts: Counter[str] = Counter()
         self.login_success = 0
         self.login_failed = 0
+        self.off_list_logins: list[dict[str, Any]] = []
         self.timestamps: list[str] = []
         self._aggregate()
 
@@ -107,9 +108,18 @@ class Report:
                     self.login_success += 1
                 else:
                     self.login_failed += 1
+                # False (not None/missing) means a wordlist *was*
+                # configured and this side wasn't found in it -- a
+                # credential a scanner tried that isn't part of any known
+                # common-username/password list, worth a human look
+                # regardless of whether the login was accepted (e.g. via
+                # the allow_list fast path, or under accept_any).
+                if ev.get("username_known") is False or ev.get("password_known") is False:
+                    self.off_list_logins.append(ev)
 
         self.commands.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
         self.downloads.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        self.off_list_logins.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
 
     @property
     def unique_ips(self) -> list[str]:
@@ -299,6 +309,7 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         (str(len(report.commands)), "Commands captured"),
         (str(len(report.downloads)), "Download attempts"),
         (f"{report.login_success} / {total_logins}", "Accepted / total logins"),
+        (str(len(report.off_list_logins)), "Off-wordlist credentials"),
     ]
     stats_html = "".join(
         f"<div class='stat'><div class='n'>{_esc(n)}</div><div class='l'>{_esc(l)}</div></div>"
@@ -352,6 +363,43 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         download_rows,
     )
 
+    off_list_rows = []
+    for ev in report.off_list_logins[:20]:
+        outcome = "success" if ev.get("event") == "login.success" else "failed"
+        pill = f"<span class='pill {'ok' if outcome == 'success' else 'bad'}'>{_esc(outcome)}</span>"
+        which = ", ".join(
+            label for label, known in (("username", ev.get("username_known")), ("password", ev.get("password_known")))
+            if known is False
+        ) or "-"
+        off_list_rows.append([
+            _esc(ev.get("timestamp", "")),
+            _esc(ev.get("src_ip", "")),
+            _esc(ev.get("username", "")),
+            _esc(ev.get("password", "")),
+            pill,
+            _esc(which),
+        ])
+    off_list_table = _table(
+        ["Timestamp", "Source IP", "Username", "Password", "Outcome", "Not on wordlist"],
+        off_list_rows,
+    )
+    wordlists_configured = any(
+        ev.get("username_known") is not None or ev.get("password_known") is not None
+        for ev in report.events if ev.get("event") in ("login.success", "login.failed")
+    )
+    if wordlists_configured:
+        off_list_body = off_list_table
+    else:
+        off_list_body = (
+            "<p class='empty'>No username/password wordlist configured on the honeypot "
+            "(credentials.username_wordlist_path / password_wordlist_path) -- nothing to compare against.</p>"
+        )
+    off_list_section = f"""
+    <div class="panel">
+      <h2>Credential attempts not on the known wordlist ({len(report.off_list_logins)})</h2>
+      {off_list_body}
+    </div>"""
+
     map_section = ""
     if geo.available:
         map_section = f"""
@@ -384,6 +432,7 @@ def render_html(report: Report, geo: GeoLookup) -> str:
   </div>
   <div class="panel"><h2>Last 10 commands</h2>{command_table}</div>
   <div class="panel"><h2>Last 10 file downloads</h2>{download_table}</div>
+  {off_list_section}
   <div class="grid-2">
     <div class="panel"><h2>Attempted usernames</h2>{_word_cloud(report.username_counts, "No login attempts yet.")}</div>
     <div class="panel"><h2>Attempted passwords</h2>{_word_cloud(report.password_counts, "No login attempts yet.")}</div>

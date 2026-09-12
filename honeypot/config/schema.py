@@ -6,6 +6,8 @@ inconsistent persona at runtime.
 """
 from __future__ import annotations
 
+import functools
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +15,20 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 
 Arch = Literal["riscv32", "riscv64"]
+
+
+@functools.lru_cache(maxsize=8)
+def _load_wordlist(path: Path) -> frozenset[str]:
+    """One-time-per-process load of a plain-text, one-entry-per-line
+    wordlist (operator-controlled config path, not attacker input). Missing
+    files degrade to "nothing matches" with a warning rather than crashing
+    the honeypot at login time."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        print(f"warning: could not read wordlist {path}: {exc}", file=sys.stderr)
+        return frozenset()
+    return frozenset(line.strip() for line in lines if line.strip())
 
 
 class Credential(BaseModel):
@@ -66,19 +82,46 @@ class CredentialPolicy(BaseModel):
     """Which username/password pairs the fake login accepts.
 
     accept_any=True maximizes capture of credential-stuffing attempts (spec
-    4.1); accept_any=False restricts acceptance to `allow_list`.
+    4.1) but is itself a honeypot tell -- no real device accepts a
+    literally-arbitrary, never-seen credential pair. The realistic
+    alternative: set accept_any=False and point username_wordlist_path /
+    password_wordlist_path at real-world-observed username/password lists;
+    a login is then accepted whenever the username and password *each
+    independently* appear in their list (not a curated list of exact
+    pairs -- an approximation, but close enough that a scanner using
+    common credentials succeeds while an arbitrary probe string doesn't).
+    `allow_list` remains a small always-accepted fast path on top of
+    either mode, for exact pairs worth guaranteeing (e.g. Mirai's
+    root/xc3511, which general password lists don't contain).
     """
 
     accept_any: bool = True
     allow_list: list[Credential] = Field(default_factory=list)
+    username_wordlist_path: Path | None = None
+    password_wordlist_path: Path | None = None
+
+    def is_known_username(self, username: str) -> bool | None:
+        """None means "no wordlist configured, this can't be judged" --
+        distinct from False ("wordlist configured, not found in it") so
+        callers (the dashboard) can skip the check entirely rather than
+        flagging every login as suspicious when no wordlist is set up."""
+        if self.username_wordlist_path is None:
+            return None
+        return username in _load_wordlist(self.username_wordlist_path)
+
+    def is_known_password(self, password: str) -> bool | None:
+        if self.password_wordlist_path is None:
+            return None
+        return password in _load_wordlist(self.password_wordlist_path)
 
     def accepts(self, username: str, password: str) -> bool:
         if self.accept_any:
             return True
-        return any(
-            c.username == username and c.password == password
-            for c in self.allow_list
-        )
+        if any(c.username == username and c.password == password for c in self.allow_list):
+            return True
+        if self.username_wordlist_path and self.password_wordlist_path:
+            return self.is_known_username(username) and self.is_known_password(password)
+        return False
 
 
 class FetcherConfig(BaseModel):

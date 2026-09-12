@@ -101,8 +101,13 @@ class SessionManager:
     # -- auth ------------------------------------------------------------
 
     def try_login(self, username: str, password: str) -> bool:
-        accepted = self.config.credentials.accepts(username, password)
-        self.events.login_attempt(self.session_id, username, password, accepted, self.src_ip)
+        credentials = self.config.credentials
+        accepted = credentials.accepts(username, password)
+        self.events.login_attempt(
+            self.session_id, username, password, accepted, self.src_ip,
+            username_known=credentials.is_known_username(username),
+            password_known=credentials.is_known_password(password),
+        )
         if accepted:
             self.authenticated = True
             self.username = username

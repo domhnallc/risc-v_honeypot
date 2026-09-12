@@ -16,6 +16,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# For tools/dashboard.py only -- a standalone reporting script, not part of
+# the honeypot runtime package (see that file's module docstring).
+dashboard = ["maxminddb>=2.2"]
 
 [tool.setuptools.packages.find]
 include = ["honeypot*"]

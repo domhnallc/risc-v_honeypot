@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 
 from honeypot.config.schema import PersonaConfig
 from honeypot.shell import persona as persona_render
-from honeypot.shell.filesystem import FakeDir, FakeFilesystem, FakeSymlink
+from honeypot.shell.filesystem import FakeDir, FakeDynamicFile, FakeFilesystem, FakeSymlink
+from honeypot.shell import sysstate
 from honeypot.shell.help_text import HELP_TEXT
 
 _DOWNLOAD_COMMANDS = {"wget", "curl", "tftp"}
@@ -38,23 +39,31 @@ _DOWNLOAD_COMMANDS = {"wget", "curl", "tftp"}
 # one deliberate exception.
 _AWK_PRINT_FIELD = re.compile(r"^\{\s*print\s+\$(\d+)\s*\}$")
 
-_FAKE_IFCONFIG_OUTPUT = (
-    "eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:00:02  \n"
-    "          inet addr:172.17.0.2  Bcast:172.17.255.255  Mask:255.255.0.0\n"
-    "          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1\n"
-    "          RX packets:118273 errors:0 dropped:0 overruns:0 frame:0\n"
-    "          TX packets:94215 errors:0 dropped:0 overruns:0 carrier:0\n"
-    "          collisions:0 txqueuelen:1000 \n"
-    "          RX bytes:132484219 (126.3 MiB)  TX bytes:14882931 (14.1 MiB)\n"
-    "\n"
-    "lo        Link encap:Local Loopback  \n"
-    "          inet addr:127.0.0.1  Mask:255.0.0.0\n"
-    "          UP LOOPBACK RUNNING  MTU:65536  Metric:1\n"
-    "          RX packets:12 errors:0 dropped:0 overruns:0 frame:0\n"
-    "          TX packets:12 errors:0 dropped:0 overruns:0 carrier:0\n"
-    "          collisions:0 txqueuelen:1000 \n"
-    "          RX bytes:960 (960.0 B)  TX bytes:960 (960.0 B)"
-)
+def _render_ifconfig() -> str:
+    # eth0's counters are real device state that only ever climbs since
+    # boot -- returning the exact same numbers on every call (the old,
+    # static behavior here) is itself a tell. lo's traffic is boring and
+    # stays static; nothing meaningfully drops packets over loopback.
+    net = sysstate.network_counters()
+    rx_human = sysstate.format_bytes_human(net["rx_bytes"])
+    tx_human = sysstate.format_bytes_human(net["tx_bytes"])
+    return (
+        "eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:00:02  \n"
+        "          inet addr:172.17.0.2  Bcast:172.17.255.255  Mask:255.255.0.0\n"
+        "          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1\n"
+        f"          RX packets:{net['rx_packets']} errors:0 dropped:0 overruns:0 frame:0\n"
+        f"          TX packets:{net['tx_packets']} errors:0 dropped:0 overruns:0 carrier:0\n"
+        "          collisions:0 txqueuelen:1000 \n"
+        f"          RX bytes:{net['rx_bytes']} ({rx_human})  TX bytes:{net['tx_bytes']} ({tx_human})\n"
+        "\n"
+        "lo        Link encap:Local Loopback  \n"
+        "          inet addr:127.0.0.1  Mask:255.0.0.0\n"
+        "          UP LOOPBACK RUNNING  MTU:65536  Metric:1\n"
+        "          RX packets:12 errors:0 dropped:0 overruns:0 frame:0\n"
+        "          TX packets:12 errors:0 dropped:0 overruns:0 carrier:0\n"
+        "          collisions:0 txqueuelen:1000 \n"
+        "          RX bytes:960 (960.0 B)  TX bytes:960 (960.0 B)"
+    )
 
 _FAKE_IP_ADDR_OUTPUT = (
     "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue qlen 1000\n"
@@ -65,14 +74,24 @@ _FAKE_IP_ADDR_OUTPUT = (
     "    inet 172.17.0.2/16 brd 172.17.255.255 scope global eth0"
 )
 
-_FAKE_TOP_OUTPUT = (
-    "Mem: 48212K used, 207788K free, 0K shrd, 0K buff, 12000K cached\n"
-    "CPU:   2.3% usr   1.1% sys   0.0% nic  96.6% idle   0.0% io   0.0% irq   0.0% sirq\n"
-    "Load average: 0.08 0.03 0.01 1/89 1234\n"
-    "  PID  PPID USER     STAT   VSZ %VSZ %CPU COMMAND\n"
-    "    1     0 root     S     1204   0%   0% init\n"
-    "   84     1 root     S     1204   0%   0% -ash"
-)
+def _render_top() -> str:
+    # Every number here used to be a fixed constant -- calling `top` twice
+    # in a row (or across two sessions) returned byte-identical output,
+    # which no real device's load/memory figures ever do.
+    _total, used, free_kb = sysstate.memory_kb()
+    usr, sysp, idle = sysstate.cpu_percentages()
+    one, five, fifteen = sysstate.load_average()
+    cached = int(used * 0.22)
+    zero = 0.0
+    return (
+        f"Mem: {used}K used, {free_kb}K free, 0K shrd, 0K buff, {cached}K cached\n"
+        f"CPU: {usr:5.1f}% usr {sysp:5.1f}% sys {zero:5.1f}% nic {idle:5.1f}% idle"
+        f" {zero:5.1f}% io {zero:5.1f}% irq {zero:5.1f}% sirq\n"
+        f"Load average: {one:.2f} {five:.2f} {fifteen:.2f} 1/89 1234\n"
+        "  PID  PPID USER     STAT   VSZ %VSZ %CPU COMMAND\n"
+        "    1     0 root     S     1204   0%   0% init\n"
+        "   84     1 root     S     1204   0%   0% -ash"
+    )
 
 def _busybox_banner() -> str:
     """`busybox` invoked bare (or with --help): version banner + the same
@@ -276,6 +295,11 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
                         f"lrwxrwxrwx    1 root     root     {len(node.target):>8} "
                         f"Jan  1  2024 {name} -> {node.target}"
                     )
+                elif isinstance(node, FakeDynamicFile):
+                    # Real /proc pseudo-files report size 0 via stat() too --
+                    # the kernel generates their content on demand rather
+                    # than storing it.
+                    lines.append(f"-r--r--r--    1 root     root            0 Jan  1  2024 {name}")
                 else:
                     perms = "-rwxr-xr-x" if name in applets else "-rw-r--r--"
                     if node.size_override is not None:
@@ -426,7 +450,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
         return CommandResult(output="\n".join(out_lines))
 
     if cmd == "ifconfig":
-        return CommandResult(output=_FAKE_IFCONFIG_OUTPUT)
+        return CommandResult(output=_render_ifconfig())
 
     if cmd == "ip":
         sub = args[0] if args else None
@@ -455,7 +479,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
         return CommandResult(output="\n".join(lines))
 
     if cmd == "top":
-        return CommandResult(output=_FAKE_TOP_OUTPUT)
+        return CommandResult(output=_render_top())
 
     if cmd == "vi":
         # Full-screen interactive editor: genuinely out of scope for a
@@ -490,7 +514,11 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
         return CommandResult(output="  PID USER     COMMAND\n    1 root     init\n   84 root     -ash")
 
     if cmd == "free":
-        return CommandResult(output="              total        used        free\nMem:         256000       48212      207788")
+        total, used, free_kb = sysstate.memory_kb()
+        return CommandResult(output=(
+            f"              total        used        free\n"
+            f"Mem:{total:>15}{used:>12}{free_kb:>12}"
+        ))
 
     if cmd == "df":
         return CommandResult(output="Filesystem           1K-blocks      Used Available Use% Mounted on\n/dev/root               129024     54212     74812  42% /")

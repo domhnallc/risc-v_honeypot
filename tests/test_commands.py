@@ -340,10 +340,29 @@ def test_ping_produces_requested_reply_count():
     assert "2 packets transmitted" in result.output
 
 
-def test_top_returns_static_snapshot():
+def test_top_shows_a_plausible_snapshot():
     result = dispatch("top", _fs(), PersonaConfig(arch="riscv64"))
     assert "Mem:" in result.output
     assert "COMMAND" in result.output
+
+
+def test_proc_uptime_and_loadavg_exist_and_are_well_formed():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    uptime = dispatch("cat /proc/uptime", fs, persona).output
+    up, idle = uptime.split()
+    assert float(up) > 0
+    assert float(idle) > 0
+
+    loadavg = dispatch("cat /proc/loadavg", fs, persona).output
+    assert len(loadavg.split()) == 5
+
+
+def test_proc_uptime_shows_as_zero_byte_file_like_a_real_proc_entry():
+    result = dispatch("ls -l /proc", _fs(), PersonaConfig(arch="riscv64"))
+    uptime_line = next(l for l in result.output.splitlines() if l.endswith(" uptime"))
+    assert uptime_line.startswith("-r--r--r--")
+    assert uptime_line.split()[4] == "0"
 
 
 def test_vi_silently_no_ops():

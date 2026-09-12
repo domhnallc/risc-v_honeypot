@@ -10,9 +10,11 @@ from __future__ import annotations
 import random
 from copy import deepcopy
 from dataclasses import dataclass, field
+from typing import Callable
 
 from honeypot.config.schema import PersonaConfig
 from honeypot.shell import persona as persona_render
+from honeypot.shell import sysstate
 
 # A naive fake filesystem showing e.g. "[busybox applet]" for `cat /bin/ls`
 # is a one-command giveaway -- real dropper scripts routinely cat/hash /bin
@@ -59,8 +61,20 @@ class FakeSymlink:
 
 
 @dataclass
+class FakeDynamicFile:
+    """A file whose content is computed fresh on every read (e.g.
+    /proc/uptime) instead of fixed at filesystem-seed time -- static
+    content for something real devices show changing every call (uptime,
+    load average) is itself a honeypot tell. `ls -l` shows it at size 0,
+    matching real /proc pseudo-files: the kernel generates their content
+    on demand rather than storing it, so stat() genuinely reports 0 there
+    too -- one less thing to fake."""
+    generator: Callable[[], str]
+
+
+@dataclass
 class FakeDir:
-    entries: dict[str, "FakeDir | FakeFile | FakeSymlink"] = field(default_factory=dict)
+    entries: dict[str, "FakeDir | FakeFile | FakeSymlink | FakeDynamicFile"] = field(default_factory=dict)
 
 
 class FakeFilesystem:
@@ -94,6 +108,10 @@ class FakeFilesystem:
         proc_dir = self._mkdirs("proc")
         proc_dir.entries["cpuinfo"] = FakeFile(persona_render.proc_cpuinfo(self.persona))
         proc_dir.entries["version"] = FakeFile(persona_render.proc_version(self.persona))
+        proc_dir.entries["uptime"] = FakeDynamicFile(sysstate.uptime_line)
+        proc_dir.entries["loadavg"] = FakeDynamicFile(
+            lambda: sysstate.loadavg_line(self.persona.hart_count)
+        )
 
         etc_dir = self._mkdirs("etc")
         etc_dir.entries["os-release"] = FakeFile(persona_render.etc_os_release(self.persona))
@@ -122,8 +140,8 @@ class FakeFilesystem:
             base = ["root"]
         return base
 
-    def _lookup(self, parts: list[str]) -> "FakeDir | FakeFile | FakeSymlink | None":
-        node: FakeDir | FakeFile | FakeSymlink = self.root
+    def _lookup(self, parts: list[str]) -> "FakeDir | FakeFile | FakeSymlink | FakeDynamicFile | None":
+        node: FakeDir | FakeFile | FakeSymlink | FakeDynamicFile = self.root
         for part in parts:
             if part == "root":
                 continue
@@ -134,8 +152,8 @@ class FakeFilesystem:
                 return None
         return node
 
-    def _resolve_symlink(self, node: "FakeDir | FakeFile | FakeSymlink | None",
-                          parent_parts: list[str]) -> "FakeDir | FakeFile | None":
+    def _resolve_symlink(self, node: "FakeDir | FakeFile | FakeSymlink | FakeDynamicFile | None",
+                          parent_parts: list[str]) -> "FakeDir | FakeFile | FakeDynamicFile | None":
         seen = 0
         while isinstance(node, FakeSymlink) and seen < 8:
             parent = self._lookup(parent_parts)
@@ -170,6 +188,8 @@ class FakeFilesystem:
     def read_file(self, path: str) -> str | None:
         target = self._resolve(path)
         node = self._resolve_symlink(self._lookup(target), target[:-1])
+        if isinstance(node, FakeDynamicFile):
+            return node.generator()
         if isinstance(node, FakeFile):
             return node.content
         return None
@@ -198,7 +218,7 @@ class FakeFilesystem:
     def is_dir(self, path: str) -> bool:
         return isinstance(self._lookup(self._resolve(path)), FakeDir)
 
-    def listdir_nodes(self, path: str | None = None) -> "dict[str, FakeDir | FakeFile | FakeSymlink] | str":
+    def listdir_nodes(self, path: str | None = None) -> "dict[str, FakeDir | FakeFile | FakeSymlink | FakeDynamicFile] | str":
         """Like listdir(), but returns {name: node} instead of just names --
         used by `ls -l` to distinguish files from directories per entry."""
         target = self._resolve(path) if path else self.cwd_path

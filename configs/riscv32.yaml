@@ -10,6 +10,7 @@ persona:
   os_release_name: OpenWrt
   os_release_version: "21.02"
   ssh_banner: "Allwinner D1 RISC-V Linux (OpenWrt)"
+  ssh_server_id: "dropbear_2019.78"
   telnet_banner: |
     Allwinner D1 RISC-V Linux (OpenWrt)
     login: 

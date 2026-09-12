@@ -69,6 +69,14 @@ class PersonaConfig(BaseModel):
     os_release_version: str = "2023.02"
     ssh_banner: str = "SiFive RISC-V Linux (buildroot)"
     telnet_banner: str = "SiFive RISC-V Linux (buildroot)\nlogin: "
+    # The SSH protocol version-exchange string (RFC 4253 sec 4.2) identifies
+    # the *SSH daemon implementation*, e.g. "SSH-2.0-dropbear_2020.81" --
+    # never a human-readable device description like ssh_banner above. Real
+    # embedded/IoT devices overwhelmingly run Dropbear (tiny footprint), so
+    # that's the realistic default; this is visible pre-auth from a bare
+    # TCP connect, so getting its format right matters more than most
+    # other fields here.
+    ssh_server_id: str = "dropbear_2020.81"
 
     @field_validator("hart_count")
     @classmethod

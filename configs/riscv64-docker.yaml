@@ -10,6 +10,7 @@ persona:
   os_release_name: Buildroot
   os_release_version: "2023.02"
   ssh_banner: "SiFive RISC-V Linux (buildroot)"
+  ssh_server_id: "dropbear_2020.81"
   telnet_banner: |
     SiFive RISC-V Linux (buildroot)
     login: 

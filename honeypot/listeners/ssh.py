@@ -106,13 +106,16 @@ async def start_ssh_listener(config: HoneypotConfig, event_logger: EventLogger,
     def server_factory() -> _HoneypotSSHServer:
         return _HoneypotSSHServer(config, event_logger, limiter)
 
-    banner_version = "SSH-2.0-" + config.persona.ssh_banner.replace(" ", "_")[:40]
-
     return await asyncssh.create_server(
         server_factory,
         host=config.listeners.bind_host,
         port=config.listeners.ssh_port,
         server_host_keys=[str(host_key_path)],
         process_factory=_process_factory(config),
-        server_version=banner_version,
+        # asyncssh prepends "SSH-2.0-" itself (see _send_version in
+        # asyncssh/connection.py) -- this must be *just* the software
+        # identifier (e.g. "dropbear_2020.81"), not a full "SSH-2.0-..."
+        # string, or the wire banner ends up double-prefixed
+        # ("SSH-2.0-SSH-2.0-..."), which was the previous bug here.
+        server_version=config.persona.ssh_server_id,
     )

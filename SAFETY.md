@@ -93,15 +93,29 @@ auditable in one small file.
 
 ## 5. The fetcher's outbound network path is constrained
 
-This is an infrastructure/deployment guarantee, not something enforceable
-from inside a single Python process -- see the production topology note in
-point 2 above. Concretely: deploy the fetcher in a network namespace or on a
-host whose only permitted egress is to the public internet (to reach
-attacker-controlled dropper infrastructure) and whose firewall/route table has
-**no path** to the honeypot's own logging/storage/management network. The
-fetcher writes its output (quarantined files + JSON sidecars) to a
-write-only-from-its-side drop location; it never needs read access to
-anything the session-handling side owns.
+Full network-layer isolation (no route from the fetcher's egress to your
+logging/storage/management network) is still an infrastructure/deployment
+guarantee -- see the production topology note in point 2 above and deploy
+per that section's advice. But `FetcherConfig.block_private_networks`
+(default `True`) enforces the code-side half of this from inside the
+process itself: `honeypot/fetcher/ssrf_guard.py` wraps aiohttp's resolver so
+every DNS lookup `fetch_and_quarantine()` performs -- the attacker's
+original URL *and* any HTTP redirect it returns -- is rejected if it
+resolves to loopback/RFC1918/link-local/reserved/multicast, which is what
+stops `wget`/`curl` inside the fake shell from being usable as a scanner
+against the fetcher host's own local services or a cloud metadata endpoint
+(`169.254.169.254`). Leave this `True` in any deployment reachable from the
+internet; only a config that deliberately targets local addresses on
+purpose (`configs/training.yaml`) sets it `False`.
+
+Separately, `_render_download_response()` in `honeypot/session/manager.py`
+never echoes a fetch failure's raw exception text back to the attacker
+(`_wget_error_text()` maps it to one of a small set of generic, realistic
+busybox-wget error lines instead) -- otherwise the raw aiohttp/asyncio
+error string would tell an attacker probing internal addresses whether a
+given host:port was open, closed, filtered, or blocked by this guarantee,
+which would itself leak the reconnaissance signal this guarantee exists to
+deny them.
 
 ## Verifying these guarantees
 

@@ -11,6 +11,7 @@ import asyncio
 import logging
 
 from honeypot.config.schema import HoneypotConfig
+from honeypot.listeners.limiter import ConnectionLimiter
 from honeypot.logging.events import EventLogger
 from honeypot.session.manager import SessionManager
 
@@ -21,6 +22,13 @@ SB, SE = 0xFA, 0xF0
 log = logging.getLogger(__name__)
 
 _NORMAL, _GOT_IAC, _GOT_CMD, _IN_SUBNEG, _SUBNEG_IAC = range(5)
+
+# No real embedded telnetd accepts an unbounded line before a newline either
+# -- without a cap here, one connection sending data with no '\n' grows
+# `linebuf` forever, and a handful of such connections is a memory-exhaustion
+# DoS against the whole process. 8KiB is generously above any real command
+# line this fake shell ever needs to parse.
+_MAX_LINE_BYTES = 8192
 
 
 class _IacFilter:
@@ -67,8 +75,12 @@ class _IacFilter:
 
 
 async def handle_telnet_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
-                                    config: HoneypotConfig, event_logger: EventLogger) -> None:
+                                    config: HoneypotConfig, event_logger: EventLogger,
+                                    limiter: ConnectionLimiter) -> None:
     peer = writer.get_extra_info("peername") or ("0.0.0.0", 0)
+    if not limiter.try_acquire(peer[0]):
+        writer.close()  # too many concurrent connections from this source IP
+        return
     iac = _IacFilter()
     linebuf = bytearray()
 
@@ -88,6 +100,8 @@ async def handle_telnet_connection(reader: asyncio.StreamReader, writer: asyncio
                     linebuf = bytearray()
                     return line
                 if cleaned != 0x0D:
+                    if len(linebuf) >= _MAX_LINE_BYTES:
+                        return None  # oversized line: drop the connection
                     linebuf.append(cleaned)
 
     async def write(text: str) -> None:
@@ -131,12 +145,15 @@ async def handle_telnet_connection(reader: asyncio.StreamReader, writer: asyncio
     finally:
         session.on_disconnect("closed")
         writer.close()
+        limiter.release(peer[0])
 
 
 async def start_telnet_listener(config: HoneypotConfig, event_logger: EventLogger) -> asyncio.AbstractServer:
+    limiter = ConnectionLimiter(config.listeners.max_connections_per_ip)
+
     async def _client_connected(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            await handle_telnet_connection(reader, writer, config, event_logger)
+            await handle_telnet_connection(reader, writer, config, event_logger, limiter)
         except (ConnectionResetError, BrokenPipeError):
             pass
 

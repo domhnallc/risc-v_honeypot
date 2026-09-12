@@ -10,18 +10,26 @@ from pathlib import Path
 import asyncssh
 
 from honeypot.config.schema import HoneypotConfig
+from honeypot.listeners.limiter import ConnectionLimiter
 from honeypot.logging.events import EventLogger
 from honeypot.session.manager import SessionManager
 
 
 class _HoneypotSSHServer(asyncssh.SSHServer):
-    def __init__(self, config: HoneypotConfig, event_logger: EventLogger) -> None:
+    def __init__(self, config: HoneypotConfig, event_logger: EventLogger,
+                 limiter: ConnectionLimiter) -> None:
         self.config = config
         self.event_logger = event_logger
+        self.limiter = limiter
         self.session: SessionManager | None = None
+        self._limited_ip: str | None = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         peer = conn.get_extra_info("peername") or ("0.0.0.0", 0)
+        if not self.limiter.try_acquire(peer[0]):
+            conn.abort()  # too many concurrent connections from this source IP
+            return
+        self._limited_ip = peer[0]
         client_version = conn.get_extra_info("client_version")
         self.session = SessionManager(
             peer[0], peer[1], self.config.listeners.ssh_port, "ssh",
@@ -29,6 +37,11 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         )
         self.session.on_connect()
         setattr(conn, "_honeypot_server", self)
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        if self._limited_ip is not None:
+            self.limiter.release(self._limited_ip)
+            self._limited_ip = None
 
     def begin_auth(self, username: str) -> bool:
         return True  # always require a password step -- never allow no-auth
@@ -43,9 +56,13 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
 
 async def _handle_process(process: asyncssh.SSHServerProcess) -> None:
     conn = process.channel.get_connection()
-    server: _HoneypotSSHServer = getattr(conn, "_honeypot_server")
+    server: _HoneypotSSHServer | None = getattr(conn, "_honeypot_server", None)
+    if server is None or server.session is None:
+        # connection_made rejected this connection (e.g. per-IP connection
+        # cap) before a session was ever created.
+        process.exit(1)
+        return
     session = server.session
-    assert session is not None
     try:
         process.stdout.write(session.prompt())
         async for line in process.stdin:
@@ -84,9 +101,10 @@ async def start_ssh_listener(config: HoneypotConfig, event_logger: EventLogger,
                               host_key_path: str | Path = "var/ssh_host_key") -> asyncssh.SSHAcceptor:
     host_key_path = Path(host_key_path)
     await _ensure_host_key(host_key_path)
+    limiter = ConnectionLimiter(config.listeners.max_connections_per_ip)
 
     def server_factory() -> _HoneypotSSHServer:
-        return _HoneypotSSHServer(config, event_logger)
+        return _HoneypotSSHServer(config, event_logger, limiter)
 
     banner_version = "SSH-2.0-" + config.persona.ssh_banner.replace(" ", "_")[:40]
 

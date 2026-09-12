@@ -30,6 +30,13 @@ class ListenerConfig(BaseModel):
     # config-driven so separate configs (e.g. configs/training.yaml) don't
     # silently share a host key with each other or with a real deployment.
     ssh_host_key_path: Path = Path("var/ssh_host_key")
+    # First line of defense against a cheap connection-flood DoS (neither
+    # asyncssh nor asyncio's stream server cap concurrent connections on
+    # their own, and each one holds a transcript file handle open for its
+    # lifetime). 0 disables the cap. Real throttling against a distributed
+    # flood belongs at the OS/network layer (fail2ban, iptables connlimit),
+    # not here -- this only bounds what one source IP can do.
+    max_connections_per_ip: int = 8
 
 
 class PersonaConfig(BaseModel):
@@ -81,6 +88,14 @@ class FetcherConfig(BaseModel):
     timeout_seconds: float = 15.0
     allowed_protocols: list[str] = Field(default_factory=lambda: ["http", "https"])
     verify_tls: bool = False
+    # Refuse to connect (initial request *or* mid-fetch redirect) to any
+    # address that resolves to loopback/RFC1918/link-local/reserved/
+    # multicast -- this is what stops an attacker from using wget/curl to
+    # turn the fetcher into a scanner against your own internal network or
+    # cloud metadata endpoint (169.254.169.254). Leave True everywhere
+    # except a config that deliberately targets local addresses on purpose
+    # (see configs/training.yaml).
+    block_private_networks: bool = True
     # "inline": SessionManager awaits fetch_and_quarantine() directly -- fine
     # for a single-process/single-container deployment (default).
     # "queued": SessionManager only enqueues a job and polls for the result a

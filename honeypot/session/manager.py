@@ -28,6 +28,32 @@ _QUEUE_POLL_INTERVAL_SECONDS = 0.3
 _QUEUE_RESULT_GRACE_SECONDS = 5.0  # slack on top of fetcher.timeout_seconds for queue latency
 
 
+def _wget_error_text(error: str | None) -> str:
+    """Map an internal fetch-failure reason to one of a small set of
+    plausible busybox wget error lines -- never the raw exception text.
+
+    The raw aiohttp/asyncio exception string can include internal network
+    detail (which port refused vs timed out vs failed DNS) that lets an
+    attacker use wget as a blind scanner against whatever network the
+    fetcher can reach. Collapsing every real network failure to the same
+    generic line closes that off; only our own explicit, non-sensitive
+    failure reasons (bad protocol, oversized transfer) get a distinct,
+    still-generic message.
+    """
+    error = error or ""
+    if "not permitted" in error or "not yet implemented" in error:
+        return "not an http or ftp url"
+    if "exceeded max_file_size_bytes" in error:
+        return "transfer closed with file not completely written"
+    if "waiting for isolated fetcher" in error:
+        # Queued-mode-only: the worker process never responded in time.
+        # Safe to show verbatim-ish -- it doesn't vary with the attacker's
+        # chosen URL/destination, so it can't be used to fingerprint what's
+        # reachable, unlike a real per-target network error would.
+        return "timed out waiting for a response"
+    return "can't connect to remote host"
+
+
 def new_session_id() -> str:
     return uuid.uuid4().hex[:16]
 
@@ -169,4 +195,4 @@ class SessionManager:
                 f"  {fetch_result.size_bytes // 1024 or 1}k  0:00:00 ETA\n"
                 f"'{req.requested_filename}' saved"
             )
-        return f"Connecting to {host}\nwget: {fetch_result.error}"
+        return f"Connecting to {host}\nwget: {_wget_error_text(fetch_result.error)}"

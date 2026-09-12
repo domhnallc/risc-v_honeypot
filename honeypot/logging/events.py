@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -31,6 +32,12 @@ class EventLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.log_dir / filename
         self._lock = threading.Lock()
+        # This file captures every raw attacker-supplied login password
+        # (spec 4.5's login.success/failed events) -- keep it owner-only
+        # regardless of umask, since some scanners submit real, reused
+        # human passwords.
+        self.path.touch(exist_ok=True)
+        os.chmod(self.path, 0o600)
 
     def log(self, event_type: str, **fields: Any) -> None:
         record = {"timestamp": _now(), "event": event_type, **fields}
@@ -80,6 +87,7 @@ class TranscriptWriter:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / f"{session_id}.jsonl"
         self._fh: TextIO = self.path.open("a", encoding="utf-8")
+        os.chmod(self.path, 0o600)  # raw session bytes may include captured credentials
 
     def record(self, direction: str, data: bytes) -> None:
         assert direction in ("recv", "send")

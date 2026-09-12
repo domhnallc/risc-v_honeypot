@@ -40,6 +40,7 @@ fetcher:
   timeout_seconds: 15
   allowed_protocols: [http, https]
   verify_tls: false
+  block_private_networks: false   # training mode fetches from 127.0.0.1 on purpose
 
 logging:
   log_dir: var/training/logs

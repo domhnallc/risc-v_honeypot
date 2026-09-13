@@ -405,6 +405,42 @@ days are deleted; override with `TRANSCRIPT_RETENTION_DAYS=N`/
 anything -- run that once by hand after installing to sanity-check it
 before trusting the cron job.
 
+## Further hardening: egress restriction and patch reminders
+
+Two smaller defense-in-depth measures worth setting up once the Docker
+Compose deployment is running, both under `deploy/`:
+
+**`restrict-honeypot-egress.sh` + `.service`** -- the `honeypot` container
+has no legitimate outbound need at all once `fetcher.mode: queued` is set
+(see "Firewall and ports" above); this blocks it from *initiating* any
+outbound connection at the host firewall, so a hypothetical future
+code-level compromise of that container (not attacker payload execution,
+which the codebase prevents by design -- a bug in our own Python or in
+asyncssh/aiohttp itself) can't be used to reach out and join further
+attacks. Inbound attacker traffic and replies to it are unaffected (a
+reply within an already-accepted connection isn't a new connection
+attempt).
+
+```
+sudo cp deploy/restrict-honeypot-egress.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now restrict-honeypot-egress.service
+sudo iptables -L DOCKER-USER -n   # confirm the DROP rule for the public network's subnet is there
+```
+
+**`check-for-updates.sh`** -- `Dockerfile`'s `FROM python:3.11-slim` and
+`pyproject.toml`'s `>=`-pinned dependencies (asyncssh, aiohttp, pydantic,
+PyYAML) only get their security patches when you actually rebuild; an
+image built once and left running indefinitely accumulates unpatched CVEs
+silently. This never rebuilds anything itself -- it only tells you when a
+rebuild or `git pull` is worth doing:
+
+```
+sudo crontab -e
+# add:
+0 4 * * 1 /root/risc-v_honeypot/deploy/check-for-updates.sh >> /var/log/riscv-honeypot-updates.log 2>&1
+```
+
 ## Reviewing captured samples
 
 Each quarantined file `var/quarantine/<sha256>.bin` has a JSON sidecar

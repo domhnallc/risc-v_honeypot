@@ -1,0 +1,12 @@
+[Unit]
+Description=Block the honeypot container's own outbound connections (defense-in-depth)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/risc-v_honeypot/deploy/restrict-honeypot-egress.sh
+
+[Install]
+WantedBy=multi-user.target

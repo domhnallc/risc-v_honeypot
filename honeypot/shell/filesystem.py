@@ -115,6 +115,7 @@ class FakeFilesystem:
 
         etc_dir = self._mkdirs("etc")
         etc_dir.entries["os-release"] = FakeFile(persona_render.etc_os_release(self.persona))
+        etc_dir.entries["issue"] = FakeFile(persona_render.etc_issue(self.persona))
         etc_dir.entries["passwd"] = FakeFile("root:x:0:0:root:/root:/bin/sh\n")
 
         self._mkdirs("root")

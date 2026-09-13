@@ -365,6 +365,16 @@ def test_top_shows_a_plausible_snapshot():
     assert "COMMAND" in result.output
 
 
+def test_etc_issue_matches_the_telnet_pre_login_banner():
+    # /etc/issue is conventionally exactly what getty prints before login
+    # on a real system -- a dropper comparing what it saw pre-login
+    # against `cat /etc/issue` post-login must never catch these two
+    # contradicting each other.
+    persona = PersonaConfig(arch="riscv64", telnet_banner="SiFive RISC-V Linux (buildroot)\nlogin: ")
+    fs = FakeFilesystem(persona)
+    assert dispatch("cat /etc/issue", fs, persona).output == "SiFive RISC-V Linux (buildroot)"
+
+
 def test_proc_uptime_and_loadavg_exist_and_are_well_formed():
     fs = _fs()
     persona = PersonaConfig(arch="riscv64")

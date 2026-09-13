@@ -58,6 +58,18 @@ def etc_os_release(persona: PersonaConfig) -> str:
     )
 
 
+def etc_issue(persona: PersonaConfig) -> str:
+    """/etc/issue is conventionally exactly what getty prints before the
+    login prompt on a real system -- derive it from telnet_banner rather
+    than inventing separate text, so a dropper that compares what it saw
+    pre-login against `cat /etc/issue` post-login can't catch the two
+    contradicting each other."""
+    lines = persona.telnet_banner.splitlines()
+    if lines and lines[-1].strip().rstrip(":").lower() == "login":
+        lines = lines[:-1]
+    return "\n".join(lines) + "\n"
+
+
 def bin_listing() -> list[str]:
     return sorted(set(_BUSYBOX_APPLETS))
 

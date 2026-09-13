@@ -113,7 +113,8 @@ async def handle_telnet_connection(reader: asyncio.StreamReader, writer: asyncio
     session = SessionManager(peer[0], peer[1], config.listeners.telnet_port, "telnet",
                               config, event_logger)
     session.on_connect()
-    try:
+
+    async def run_session() -> None:
         await write(session.banner())
         for _ in range(3):
             await write("login: ")
@@ -142,8 +143,18 @@ async def handle_telnet_connection(reader: asyncio.StreamReader, writer: asyncio
             await write(reply)
             if session.should_exit:
                 break
+
+    max_seconds = config.listeners.max_session_seconds
+    disconnect_reason = "closed"
+    try:
+        if max_seconds > 0:
+            await asyncio.wait_for(run_session(), timeout=max_seconds)
+        else:
+            await run_session()
+    except asyncio.TimeoutError:
+        disconnect_reason = "max_duration_exceeded"
     finally:
-        session.on_disconnect("closed")
+        session.on_disconnect(disconnect_reason)
         writer.close()
         limiter.release(peer[0])
 

@@ -25,6 +25,7 @@ listeners:
   telnet_enabled: true
   telnet_port: 2223
   ssh_host_key_path: var/training/ssh_host_key
+  max_session_seconds: 0   # no forced disconnect -- you're the one playing attacker here, take your time
 
 credentials:
   # Accept anything -- one less thing to remember while you're the one

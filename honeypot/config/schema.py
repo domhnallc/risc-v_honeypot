@@ -53,6 +53,13 @@ class ListenerConfig(BaseModel):
     # flood belongs at the OS/network layer (fail2ban, iptables connlimit),
     # not here -- this only bounds what one source IP can do.
     max_connections_per_ip: int = 8
+    # Absolute cap on how long any single session may stay connected,
+    # regardless of activity -- neither listener enforced any limit before
+    # this (asyncssh's login_timeout only covers the pre-auth handshake;
+    # our own Telnet loop had no timeout anywhere, not even at the login
+    # prompt), so a held-open connection was previously unbounded. 0
+    # disables the cap.
+    max_session_seconds: float = 180.0
 
 
 class PersonaConfig(BaseModel):

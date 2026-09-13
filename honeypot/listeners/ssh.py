@@ -5,6 +5,7 @@ so command parsing/logging isn't duplicated per protocol.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import asyncssh
@@ -54,7 +55,21 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         return self.session.try_login(username, password)
 
 
-async def _handle_process(process: asyncssh.SSHServerProcess) -> None:
+async def _run_process_session(process: asyncssh.SSHServerProcess, session: SessionManager) -> None:
+    process.stdout.write(session.prompt())
+    async for line in process.stdin:
+        session.record_recv(line.encode())
+        output = await session.handle_command(line)
+        reply = (output + "\n" if output else "")
+        if not session.should_exit:
+            reply += session.prompt()
+        process.stdout.write(reply)
+        session.record_send(reply.encode())
+        if session.should_exit:
+            break
+
+
+async def _handle_process(process: asyncssh.SSHServerProcess, config: HoneypotConfig) -> None:
     conn = process.channel.get_connection()
     server: _HoneypotSSHServer | None = getattr(conn, "_honeypot_server", None)
     if server is None or server.session is None:
@@ -63,28 +78,25 @@ async def _handle_process(process: asyncssh.SSHServerProcess) -> None:
         process.exit(1)
         return
     session = server.session
+    max_seconds = config.listeners.max_session_seconds
+    disconnect_reason = "closed"
     try:
-        process.stdout.write(session.prompt())
-        async for line in process.stdin:
-            session.record_recv(line.encode())
-            output = await session.handle_command(line)
-            reply = (output + "\n" if output else "")
-            if not session.should_exit:
-                reply += session.prompt()
-            process.stdout.write(reply)
-            session.record_send(reply.encode())
-            if session.should_exit:
-                break
+        if max_seconds > 0:
+            await asyncio.wait_for(_run_process_session(process, session), timeout=max_seconds)
+        else:
+            await _run_process_session(process, session)
     except asyncssh.BreakReceived:
         pass
+    except asyncio.TimeoutError:
+        disconnect_reason = "max_duration_exceeded"
     finally:
-        session.on_disconnect("closed")
+        session.on_disconnect(disconnect_reason)
         process.exit(0)
 
 
 def _process_factory(config: HoneypotConfig):
     async def factory(process: asyncssh.SSHServerProcess) -> None:
-        await _handle_process(process)
+        await _handle_process(process, config)
     return factory
 
 

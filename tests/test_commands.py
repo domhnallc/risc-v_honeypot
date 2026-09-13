@@ -86,6 +86,25 @@ def test_uname_a_reflects_persona():
     assert persona.hostname in result.output
 
 
+def test_whoami_and_id_reflect_the_logged_in_username():
+    # Real single-account embedded devices don't have per-user separation
+    # (any accepted login is effectively root), but the *name* shown must
+    # still track who actually logged in -- hardcoding "root" regardless
+    # of that, while the prompt shows the real username, was a one-command
+    # honeypot tell.
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    assert dispatch("whoami", fs, persona, "admin").output == "admin"
+    assert dispatch("id", fs, persona, "admin").output == "uid=0(admin) gid=0(admin) groups=0(admin)"
+
+
+def test_whoami_and_id_default_to_root_when_username_unknown():
+    fs = _fs()
+    persona = PersonaConfig(arch="riscv64")
+    assert dispatch("whoami", fs, persona).output == "root"
+    assert dispatch("id", fs, persona).output == "uid=0(root) gid=0(root) groups=0(root)"
+
+
 def test_cd_ls_pwd_roundtrip():
     fs = _fs()
     persona = PersonaConfig(arch="riscv64")

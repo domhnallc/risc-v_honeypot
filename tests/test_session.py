@@ -81,6 +81,15 @@ def test_login_accept_any_logs_success(config):
     assert events[1]["username"] == "root"
 
 
+def test_whoami_reflects_the_session_login_username(config):
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "ssh", config, logger)
+    session.on_connect()
+    assert session.try_login("admin", "anything") is True
+    output = asyncio.run(session.handle_command("whoami"))
+    assert output == "admin"
+
+
 def test_login_rejects_when_not_in_allow_list(tmp_path, config):
     config.credentials = CredentialPolicy(accept_any=False, allow_list=[])
     logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)

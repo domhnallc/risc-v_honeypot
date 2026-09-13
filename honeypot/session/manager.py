@@ -128,7 +128,7 @@ class SessionManager:
         self._command_count += 1
         tokens = raw.strip().split()
         command_name = tokens[0] if tokens else ""
-        result = dispatch(raw, self.fs, self.config.persona)
+        result = dispatch(raw, self.fs, self.config.persona, self.username)
         self.events.command_input(self.session_id, raw, command_name, tokens[1:])
         if result.exit_session:
             self.should_exit = True

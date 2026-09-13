@@ -216,7 +216,8 @@ def _parse_download_args(cmd: str, args: list[str]) -> DownloadRequest | None:
     return DownloadRequest(protocol=scheme, url=url, requested_filename=filename)
 
 
-def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandResult:
+def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
+             username: str | None = None) -> CommandResult:
     raw = raw.rstrip("\n").rstrip("\r")
     stripped = raw.strip()
     if not stripped:
@@ -505,10 +506,18 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig) -> CommandRes
         return CommandResult(output="Linux")
 
     if cmd == "whoami":
-        return CommandResult(output="root")
+        # These devices don't have real multi-user separation -- any
+        # accepted login effectively runs as root -- but the account name
+        # itself should still track whatever the attacker actually logged
+        # in as (matching SessionManager.prompt()'s user@host), not be
+        # hardcoded to "root" regardless of it: logging in as "admin" and
+        # then having whoami/id insist you're "root" is an easy one-command
+        # honeypot tell.
+        return CommandResult(output=username or "root")
 
     if cmd == "id":
-        return CommandResult(output="uid=0(root) gid=0(root) groups=0(root)")
+        user = username or "root"
+        return CommandResult(output=f"uid=0({user}) gid=0({user}) groups=0({user})")
 
     if cmd == "ps":
         return CommandResult(output="  PID USER     COMMAND\n    1 root     init\n   84 root     -ash")

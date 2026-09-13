@@ -373,6 +373,38 @@ NFS export, opened only between their private VPC IPs.
    `~/risc-v_honeypot/var/jobs` on `honeypot-session` and a quarantined file
    appears in `~/risc-v_honeypot/var/quarantine` on `honeypot-fetcher`.
 
+## Log rotation and cleanup
+
+Nothing in the codebase rotates or prunes `var/` on its own -- left running
+against real internet traffic, `var/logs/events.jsonl` grows forever and
+`var/transcripts/`/`var/jobs/.processing/` accumulate one file per
+session/job forever. `var/quarantine/` is deliberately exempt from all of
+this: those are captured samples, and deleting one should always be a human
+decision, never an automated one.
+
+`deploy/logrotate-riscv-honeypot.conf` handles the single ever-growing file
+(`events.jsonl`); `deploy/cleanup-var.sh` handles the many-small-files case
+(transcripts, stale job/result files) that logrotate isn't the right tool
+for. Install both once, on whichever host(s) actually have a `var/`
+directory (both Droplets, in the two-Droplet split):
+
+```
+sudo sed 's#/root/risc-v_honeypot#'"$HOME"'/risc-v_honeypot#' \
+  deploy/logrotate-riscv-honeypot.conf | sudo tee /etc/logrotate.d/riscv-honeypot
+sudo logrotate --debug /etc/logrotate.d/riscv-honeypot   # dry run, confirm no errors
+
+sudo crontab -e
+# add this line (adjust the path if you didn't clone to ~/risc-v_honeypot):
+0 3 * * * /root/risc-v_honeypot/deploy/cleanup-var.sh >> /var/log/riscv-honeypot-cleanup.log 2>&1
+```
+
+Defaults: transcripts older than 30 days and job/result files older than 7
+days are deleted; override with `TRANSCRIPT_RETENTION_DAYS=N`/
+`JOB_RETENTION_DAYS=N` env vars on the cron line. `DRY_RUN=1
+./deploy/cleanup-var.sh` shows what would be deleted without deleting
+anything -- run that once by hand after installing to sanity-check it
+before trusting the cron job.
+
 ## Reviewing captured samples
 
 Each quarantined file `var/quarantine/<sha256>.bin` has a JSON sidecar

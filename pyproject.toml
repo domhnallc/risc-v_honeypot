@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "riscv-honeypot"
 version = "0.1.0"
 description = "Medium-interaction SSH/Telnet honeypot impersonating a RISC-V Linux IoT device"
+license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.11"
 dependencies = [
     "asyncssh>=2.14",

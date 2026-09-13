@@ -25,7 +25,7 @@ import aiohttp
 from honeypot.config.schema import FetcherConfig
 from honeypot.fetcher import elf
 from honeypot.fetcher.queue import DownloadJob
-from honeypot.fetcher.ssrf_guard import BlockedDestinationError, SafeResolver
+from honeypot.fetcher.ssrf_guard import BlockedDestinationError, SafeTCPConnector
 
 
 @dataclass
@@ -66,14 +66,13 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         # verify_tls=False is intentional and logged: malware C2 infra
         # commonly serves self-signed certs (spec sec 4.4 step 4).
         #
-        # resolver=SafeResolver() re-validates the destination on every DNS
-        # lookup this connector makes -- not just the attacker's original
-        # URL -- so a redirect to an internal address is blocked exactly
-        # like a direct one would be (see honeypot/fetcher/ssrf_guard.py).
-        connector = aiohttp.TCPConnector(
-            ssl=None if config.verify_tls else False,
-            resolver=SafeResolver() if config.block_private_networks else None,
-        )
+        # SafeTCPConnector re-validates the destination on every connection
+        # this makes -- literal IP, hostname, or a redirect to either --
+        # not just the attacker's original URL (see
+        # honeypot/fetcher/ssrf_guard.py for why a literal IP address needs
+        # more than wrapping the resolver).
+        connector_cls = SafeTCPConnector if config.block_private_networks else aiohttp.TCPConnector
+        connector = connector_cls(ssl=None if config.verify_tls else False)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as http:
             async with http.get(job.url) as resp:
                 with tmp_path.open("wb") as fh:
@@ -87,14 +86,18 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
                         sha256.update(chunk)
                         md5.update(chunk)
                         fh.write(chunk)
-    except BlockedDestinationError as exc:
-        # Tagged distinctly from other failures so operators reading
-        # events.jsonl can tell "attacker pointed this at our own network"
-        # apart from an ordinary dead/unreachable URL.
-        tmp_path.unlink(missing_ok=True)
-        return FetchResult(success=False, error=f"blocked non-public destination: {exc}")
     except Exception as exc:  # fetch failures are data, not exceptions to propagate
         tmp_path.unlink(missing_ok=True)
+        # aiohttp wraps whatever SafeTCPConnector._resolve_host() raises in
+        # its own connector exception rather than letting it propagate
+        # directly (confirmed: BlockedDestinationError survives only as
+        # __cause__) -- walk the chain so operators reading events.jsonl
+        # can still tell "attacker pointed this at our own network" apart
+        # from an ordinary dead/unreachable URL, distinctly from every
+        # other failure reason.
+        blocked = exc if isinstance(exc, BlockedDestinationError) else exc.__cause__
+        if isinstance(blocked, BlockedDestinationError):
+            return FetchResult(success=False, error=f"blocked non-public destination: {blocked}")
         return FetchResult(success=False, error=str(exc))
 
     digest = sha256.hexdigest()

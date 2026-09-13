@@ -57,6 +57,11 @@ def config(tmp_path) -> HoneypotConfig:
         fetcher=FetcherConfig(
             quarantine_dir=tmp_path / "quarantine",
             jobs_dir=tmp_path / "jobs",
+            # This fixture's tests fetch from a local _Server standing in
+            # for dropper infrastructure (127.0.0.1) -- the SSRF guard
+            # would otherwise (correctly) block every one of them. See
+            # test_ssrf_guard.py for dedicated tests of the guard itself.
+            block_private_networks=False,
         ),
         logging=LoggingConfig(
             log_dir=tmp_path / "logs",

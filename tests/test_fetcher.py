@@ -59,6 +59,11 @@ def _config(tmp_path: Path, **overrides) -> FetcherConfig:
         timeout_seconds=5.0,
         allowed_protocols=["http", "https"],
         verify_tls=False,
+        # These tests fetch from a local _Server standing in for dropper
+        # infrastructure (127.0.0.1) -- the SSRF guard would otherwise
+        # (correctly) block every one of them. See test_ssrf_guard.py for
+        # dedicated tests of the guard itself.
+        block_private_networks=False,
     )
     base.update(overrides)
     return FetcherConfig(**base)

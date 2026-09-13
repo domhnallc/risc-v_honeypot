@@ -98,15 +98,23 @@ logging/storage/management network) is still an infrastructure/deployment
 guarantee -- see the production topology note in point 2 above and deploy
 per that section's advice. But `FetcherConfig.block_private_networks`
 (default `True`) enforces the code-side half of this from inside the
-process itself: `honeypot/fetcher/ssrf_guard.py` wraps aiohttp's resolver so
-every DNS lookup `fetch_and_quarantine()` performs -- the attacker's
-original URL *and* any HTTP redirect it returns -- is rejected if it
-resolves to loopback/RFC1918/link-local/reserved/multicast, which is what
-stops `wget`/`curl` inside the fake shell from being usable as a scanner
-against the fetcher host's own local services or a cloud metadata endpoint
-(`169.254.169.254`). Leave this `True` in any deployment reachable from the
-internet; only a config that deliberately targets local addresses on
-purpose (`configs/training.yaml`) sets it `False`.
+process itself: `honeypot/fetcher/ssrf_guard.py`'s `SafeTCPConnector`
+overrides `_resolve_host()` so every connection `fetch_and_quarantine()`
+makes -- the attacker's original URL, a literal IP address given directly
+(e.g. `wget http://169.254.169.254/...`, no hostname at all), *and* any
+HTTP redirect returned mid-fetch -- is rejected if it reaches loopback/
+RFC1918/link-local/reserved/multicast. (An earlier version of this guard
+only wrapped aiohttp's *resolver*, which aiohttp never calls when the URL's
+host is already a literal IP -- confirmed exploitable live: a fetch to a
+literal loopback IP with a real server listening went straight through,
+unblocked. `_resolve_host` is the one choke point every connection
+funnels through regardless of that distinction, and
+`test_ssrf_guard.py::test_literal_ip_target_is_actually_blocked_end_to_end`
+now guards against this specific regression class live, not just via a
+unit test of the address-classification logic.) Leave this `True` in any
+deployment reachable from the internet; only a config that deliberately
+targets local addresses on purpose (`configs/training.yaml`) sets it
+`False`.
 
 Separately, `_render_download_response()` in `honeypot/session/manager.py`
 never echoes a fetch failure's raw exception text back to the attacker

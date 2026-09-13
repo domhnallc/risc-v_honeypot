@@ -480,6 +480,55 @@ file, or extend `honeypot/logging/events.py` with a forwarding sink -- the
 spec deliberately keeps this pluggable rather than building a forwarder for
 v1.
 
+## Dashboard
+
+Two ways to view `var/logs/events.jsonl` as a report (sessions, top source
+IPs, a world map + country breakdown, last 10 commands/downloads, repeat
+successful logins, credential word clouds) instead of raw JSONL -- both
+under `tools/`, deliberately outside the `honeypot` package for the same
+reason as everywhere else in this README: CLAUDE.md / the build spec mark
+a web dashboard as out of scope for the honeypot itself, so these are
+separate, read-only consumers of the logs, never imported by or running
+alongside the listeners.
+
+**Static, one-shot** (`tools/dashboard.py`, `pip install -e '.[dashboard]'`):
+renders a single self-contained HTML file you open in a browser; re-run it
+whenever you want a fresh snapshot.
+
+```
+python3 tools/dashboard.py configs/riscv64.yaml --geoip var/GeoLite2-City.mmdb --out var/dashboard.html
+```
+
+**Live** (`tools/dashboard_server.py`, `pip install -e '.[dashboard-server]'`):
+a small Flask app serving the same report dynamically -- every page load
+(and every auto-refresh, default every 15s) re-reads the current log file,
+so you can just leave the tab open.
+
+```
+python3 tools/dashboard_server.py configs/riscv64.yaml --geoip var/GeoLite2-City.mmdb
+```
+
+**Every page load shows real captured attacker IPs and credentials, and
+the server has no authentication of its own.** `--host` defaults to
+`127.0.0.1` (loopback only) on purpose -- view it through an SSH tunnel
+rather than binding a public interface:
+
+```
+ssh -L 5000:localhost:5000 -p 2200 root@<droplet-ip>   # from your own machine
+# then, on the droplet in a separate session:
+python3 tools/dashboard_server.py configs/riscv64-docker.yaml --geoip var/GeoLite2-City.mmdb
+# now open http://localhost:5000/ in your own browser
+```
+
+If you deliberately pass a non-loopback `--host`, put an authenticating
+reverse proxy in front of it first -- Flask's built-in server is a
+development server either way, not something to expose directly.
+
+Neither tool ships a GeoLite2 database -- MaxMind's license requires a
+free signup before you can download `GeoLite2-City.mmdb` yourself
+(https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). Omit
+`--geoip` and the map/country sections are just skipped.
+
 ## Repository layout
 
 ```

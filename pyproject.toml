@@ -20,6 +20,9 @@ dev = ["pytest>=8.0"]
 # For tools/dashboard.py only -- a standalone reporting script, not part of
 # the honeypot runtime package (see that file's module docstring).
 dashboard = ["maxminddb>=2.2"]
+# For tools/dashboard_server.py -- the live Flask version of the same
+# report (see that file's module docstring). Superset of `dashboard`.
+dashboard-server = ["maxminddb>=2.2", "flask>=3.0"]
 
 [tool.setuptools.packages.find]
 include = ["honeypot*"]

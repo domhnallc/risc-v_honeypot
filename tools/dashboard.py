@@ -79,6 +79,7 @@ class Report:
         self.login_success = 0
         self.login_failed = 0
         self.off_list_logins: list[dict[str, Any]] = []
+        self.successful_logins_by_ip: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.timestamps: list[str] = []
         self._aggregate()
 
@@ -106,6 +107,7 @@ class Report:
                 self.password_counts[ev.get("password", "")] += 1
                 if etype == "login.success":
                     self.login_success += 1
+                    self.successful_logins_by_ip[ev.get("src_ip", "")].append(ev)
                 else:
                     self.login_failed += 1
                 # False (not None/missing) means a wordlist *was*
@@ -124,6 +126,16 @@ class Report:
     @property
     def unique_ips(self) -> list[str]:
         return sorted(self.ip_session_counts, key=self.ip_session_counts.get, reverse=True)
+
+    @property
+    def repeat_visitor_ips(self) -> list[tuple[str, list[dict[str, Any]]]]:
+        """Source IPs with more than one *successful* login -- the pattern
+        worth watching for a Mirai-style two-stage campaign, where a
+        harvester bot verifies credentials work now and a separate loader
+        bot returns later to actually drop a payload using them. Sorted
+        by most logins first."""
+        repeats = [(ip, evs) for ip, evs in self.successful_logins_by_ip.items() if len(evs) > 1]
+        return sorted(repeats, key=lambda kv: len(kv[1]), reverse=True)
 
     @property
     def first_seen(self) -> str | None:
@@ -310,6 +322,7 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         (str(len(report.downloads)), "Download attempts"),
         (f"{report.login_success} / {total_logins}", "Accepted / total logins"),
         (str(len(report.off_list_logins)), "Off-wordlist credentials"),
+        (str(len(report.repeat_visitor_ips)), "Repeat visitor IPs"),
     ]
     stats_html = "".join(
         f"<div class='stat'><div class='n'>{_esc(n)}</div><div class='l'>{_esc(l)}</div></div>"
@@ -328,6 +341,21 @@ def render_html(report: Report, geo: GeoLookup) -> str:
             map_points.append((geo_info["lon"], geo_info["lat"], f"{ip} ({country})", count))
         ip_rows.append([_esc(ip), str(count), _esc(country)])
     ip_table = _table(["Source IP", "Sessions", "Country"], ip_rows)
+
+    repeat_rows = []
+    for ip, logins in report.repeat_visitor_ips:
+        timestamps = sorted(ev.get("timestamp", "") for ev in logins)
+        usernames = sorted({ev.get("username", "") for ev in logins})
+        geo_info = geo.lookup(ip)
+        country = geo_info["country"] if geo_info else "-"
+        repeat_rows.append([
+            _esc(ip), str(len(logins)), _esc(timestamps[0]), _esc(timestamps[-1]),
+            _esc(", ".join(usernames)), _esc(country),
+        ])
+    repeat_table = _table(
+        ["Source IP", "Successful logins", "First seen", "Last seen", "Usernames used", "Country"],
+        repeat_rows,
+    )
 
     country_rows = [[_esc(c), str(n)] for c, n in country_counts.most_common(15)]
     country_table = _table(["Country", "Sessions"], country_rows)
@@ -429,6 +457,14 @@ def render_html(report: Report, geo: GeoLookup) -> str:
   <div class="grid-2">
     <div class="panel"><h2>Top source IPs</h2>{ip_table}</div>
     <div class="panel"><h2>Top countries</h2>{country_table}</div>
+  </div>
+  <div class="panel">
+    <h2>Repeat successful logins ({len(report.repeat_visitor_ips)})</h2>
+    {repeat_table if report.repeat_visitor_ips else
+      "<p class='empty'>None yet -- worth watching for: a Mirai-style campaign often splits "
+      "into a harvester bot that just verifies credentials work, and a separate loader bot "
+      "that returns later (sometimes hours/days) to actually drop a payload using them. "
+      "An IP showing up here is your signal to watch it for a download attempt.</p>"}
   </div>
   <div class="panel"><h2>Last 10 commands</h2>{command_table}</div>
   <div class="panel"><h2>Last 10 file downloads</h2>{download_table}</div>

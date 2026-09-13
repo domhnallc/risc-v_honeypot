@@ -109,6 +109,33 @@ def test_off_wordlist_logins_are_collected_and_shown():
     assert "Credential attempts not on the known wordlist (1)" in out
 
 
+def test_repeat_visitor_ips_are_identified():
+    events = _events(
+        # 1.2.3.4 logs in successfully twice -- the harvester-then-loader pattern
+        {"timestamp": "2026-01-01T00:00:00Z", "event": "login.success", "src_ip": "1.2.3.4", "username": "root"},
+        {"timestamp": "2026-01-02T00:00:00Z", "event": "login.success", "src_ip": "1.2.3.4", "username": "admin"},
+        # 5.6.7.8 only logs in once -- not a repeat
+        {"timestamp": "2026-01-01T00:00:00Z", "event": "login.success", "src_ip": "5.6.7.8", "username": "root"},
+    )
+    report = Report(events)
+    assert report.repeat_visitor_ips == [
+        ("1.2.3.4", report.successful_logins_by_ip["1.2.3.4"]),
+    ]
+    out = render_html(report, GeoLookup(None))
+    assert "Repeat successful logins (1)" in out
+    assert "1.2.3.4" in out
+    assert "admin, root" in out  # usernames sorted alphabetically
+
+
+def test_no_repeat_visitors_shows_explanatory_message():
+    events = _events(
+        {"timestamp": "2026-01-01T00:00:00Z", "event": "login.success", "src_ip": "5.6.7.8", "username": "root"},
+    )
+    out = render_html(Report(events), GeoLookup(None))
+    assert "Repeat successful logins (0)" in out
+    assert "harvester bot" in out
+
+
 def test_off_wordlist_section_explains_itself_when_not_configured():
     events = _events(
         {"timestamp": "2026-01-01T00:00:00Z", "event": "login.failed", "src_ip": "1.2.3.4",

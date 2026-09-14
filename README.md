@@ -496,12 +496,25 @@ plain-text summary -- session/IP volume, login success rate, command
 patterns grouped across successful logins (what actually distinguishes a
 harvester that sends nothing from real recon from a weaponization
 attempt), download attempts, and repeat visitors. Good for a fast check
-without a browser at all.
+without a browser at all -- including straight on a bare Droplet host,
+where the other two tools can't run without first creating a venv (a bare
+host's system Python refuses `pip install` directly -- Debian/Ubuntu's
+PEP 668 `externally-managed-environment` protection).
 
 ```
-python3 tools/status_check.py configs/riscv64.yaml
+python3 tools/status_check.py --events var/logs/events.jsonl
 python3 tools/status_check.py --events var/logs/events.jsonl --exclude-ip <your-own-testing-ip>
 ```
+
+Use `--events`, not the `configs/riscv64.yaml` positional-arg form, when
+running this directly on a bare Droplet host: the config form resolves the
+log path by importing `honeypot.config`, and that package isn't installed
+on the host's system Python at all (it only exists inside the Docker
+image) -- `--events` sidesteps needing the package entirely, which is the
+whole point of reaching for this tool there. The config form still works
+fine wherever `honeypot` *is* importable (the venv from "Installation"
+above, or one made just for `tools/`, per `pip install -e
+'.[dashboard-server]'` below).
 
 **Static, one-shot** (`tools/dashboard.py`, `pip install -e '.[dashboard]'`):
 renders a single self-contained HTML file you open in a browser; re-run it

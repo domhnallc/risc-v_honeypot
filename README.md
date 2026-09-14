@@ -482,14 +482,26 @@ v1.
 
 ## Dashboard
 
-Two ways to view `var/logs/events.jsonl` as a report (sessions, top source
-IPs, a world map + country breakdown, last 10 commands/downloads, repeat
-successful logins, credential word clouds) instead of raw JSONL -- both
-under `tools/`, deliberately outside the `honeypot` package for the same
-reason as everywhere else in this README: CLAUDE.md / the build spec mark
-a web dashboard as out of scope for the honeypot itself, so these are
-separate, read-only consumers of the logs, never imported by or running
-alongside the listeners.
+Three ways to view `var/logs/events.jsonl` as a report instead of raw
+JSONL -- all under `tools/`, deliberately outside the `honeypot` package
+for the same reason as everywhere else in this README: CLAUDE.md / the
+build spec mark a web dashboard as out of scope for the honeypot itself,
+so these are separate, read-only consumers of the logs, never imported by
+or running alongside the listeners. All three agree on the numbers --
+`dashboard_server.py` and `status_check.py` both reuse `dashboard.py`'s
+`Report` for aggregation rather than each computing their own.
+
+**Quick CLI glance** (`tools/status_check.py`, no extra install needed):
+plain-text summary -- session/IP volume, login success rate, command
+patterns grouped across successful logins (what actually distinguishes a
+harvester that sends nothing from real recon from a weaponization
+attempt), download attempts, and repeat visitors. Good for a fast check
+without a browser at all.
+
+```
+python3 tools/status_check.py configs/riscv64.yaml
+python3 tools/status_check.py --events var/logs/events.jsonl --exclude-ip <your-own-testing-ip>
+```
 
 **Static, one-shot** (`tools/dashboard.py`, `pip install -e '.[dashboard]'`):
 renders a single self-contained HTML file you open in a browser; re-run it

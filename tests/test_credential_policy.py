@@ -1,11 +1,20 @@
-"""Tests for CredentialPolicy's wordlist-based acceptance (honeypot/config/schema.py).
+"""Tests for CredentialPolicy's acceptance logic (honeypot/config/schema.py).
 
 accept_any=True accepting a literally-arbitrary credential pair is itself a
-honeypot tell (see the pentest note in CLAUDE.md); this is the realistic
-alternative: accept only when username and password each independently
-appear in a real-world-observed wordlist, plus a small always-on allow_list
-fast path for exact pairs worth guaranteeing regardless of the wordlists
-(e.g. Mirai's root/xc3511).
+honeypot tell (see the pentest note in CLAUDE.md). The realistic
+alternative: accept a login when the username is in the small,
+persona-appropriate valid_usernames set (default root/admin) and the
+password independently appears in a real-world-observed password
+wordlist, plus a small always-on allow_list fast path for exact pairs
+worth guaranteeing regardless (e.g. Mirai's root/xc3511).
+
+The username side deliberately does NOT gate on a broad wordlist the way
+the password side does -- confirmed against real traffic that doing so
+lets one source IP succeed with many wildly different usernames against
+the same simulated device (one real IP got 9 different accepted
+usernames), which is itself a stronger honeypot tell than accept_any: it
+looks selective on any single attempt and only falls apart across
+repeated attempts from the same source.
 """
 from __future__ import annotations
 
@@ -64,3 +73,30 @@ def test_accept_any_still_bypasses_everything(tmp_path):
     policy = _policy(tmp_path, ["root"], ["123456"])
     policy.accept_any = True
     assert policy.accepts("literally-anything", "literally-anything")
+
+
+def test_username_on_the_broad_wordlist_but_not_valid_usernames_is_rejected(tmp_path):
+    # The actual finding this covers: a source IP getting many different
+    # usernames all accepted against the "same device" is itself a
+    # honeypot tell (confirmed against real traffic -- one IP got 9
+    # different accepted usernames). "arthur" being a real, commonly-
+    # attempted SSH username (on the broad wordlist) must not be enough
+    # to succeed on its own -- only valid_usernames gates acceptance.
+    policy = _policy(tmp_path, ["root", "arthur"], ["123456"])
+    assert policy.is_known_username("arthur") is True  # plausible, for the dashboard's off-wordlist flag
+    assert not policy.accepts("arthur", "123456")  # but not an account this device actually has
+    assert policy.accepts("root", "123456")
+
+
+def test_valid_usernames_defaults_to_root_and_admin(tmp_path):
+    policy = _policy(tmp_path, ["root", "admin", "guest"], ["123456"])
+    assert policy.accepts("root", "123456")
+    assert policy.accepts("admin", "123456")
+    assert not policy.accepts("guest", "123456")
+
+
+def test_valid_usernames_is_configurable(tmp_path):
+    policy = _policy(tmp_path, ["root", "admin"], ["123456"])
+    policy.valid_usernames = ["root"]
+    assert policy.accepts("root", "123456")
+    assert not policy.accepts("admin", "123456")

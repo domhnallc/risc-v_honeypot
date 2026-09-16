@@ -99,27 +99,50 @@ class CredentialPolicy(BaseModel):
     accept_any=True maximizes capture of credential-stuffing attempts (spec
     4.1) but is itself a honeypot tell -- no real device accepts a
     literally-arbitrary, never-seen credential pair. The realistic
-    alternative: set accept_any=False and point username_wordlist_path /
-    password_wordlist_path at real-world-observed username/password lists;
-    a login is then accepted whenever the username and password *each
-    independently* appear in their list (not a curated list of exact
-    pairs -- an approximation, but close enough that a scanner using
-    common credentials succeeds while an arbitrary probe string doesn't).
+    alternative: set accept_any=False, point password_wordlist_path at a
+    real-world-observed password list, and rely on `valid_usernames` (not
+    username_wordlist_path) to gate which usernames can ever succeed --
+    a login is accepted when the username is one of `valid_usernames` and
+    the password independently appears in the password wordlist.
     `allow_list` remains a small always-accepted fast path on top of
     either mode, for exact pairs worth guaranteeing (e.g. Mirai's
-    root/xc3511, which general password lists don't contain).
+    root/xc3511, which a general password list doesn't contain).
+
+    Why `valid_usernames` (a small fixed set) rather than also matching
+    the username against a broad wordlist: confirmed against real traffic
+    that doing so lets one source IP succeed with many wildly different
+    usernames against the same simulated device (one IP got 9 different
+    accepted usernames -- "arthur", "botuser", "mailuser", "teste"... all
+    "working" on one box). No real embedded device has 9 valid accounts;
+    it has one, occasionally two. That pattern looks selective on any
+    single login attempt and only falls apart across repeated attempts
+    from the same source -- exactly the kind of check a deliberate
+    honeypot-hunter (not just a generic credential-stuffing bot) would
+    run. `username_wordlist_path` is kept only for `is_known_username()`,
+    used purely to judge "does this look like a plausible attempted
+    username" for the dashboard's off-wordlist flag -- not to gate
+    acceptance.
     """
 
     accept_any: bool = True
     allow_list: list[Credential] = Field(default_factory=list)
     username_wordlist_path: Path | None = None
     password_wordlist_path: Path | None = None
+    # The actual gate on which usernames can ever succeed a login (see the
+    # class docstring for why this isn't username_wordlist_path). Real
+    # embedded/IoT SSH-Telnet backdoors overwhelmingly run everything as a
+    # single root account; some (routers, NAS boxes) also expose a
+    # separate admin account.
+    valid_usernames: list[str] = Field(default_factory=lambda: ["root", "admin"])
 
     def is_known_username(self, username: str) -> bool | None:
         """None means "no wordlist configured, this can't be judged" --
         distinct from False ("wordlist configured, not found in it") so
         callers (the dashboard) can skip the check entirely rather than
-        flagging every login as suspicious when no wordlist is set up."""
+        flagging every login as suspicious when no wordlist is set up.
+        Judges plausibility for the dashboard's off-wordlist flag only --
+        see accepts() and the class docstring for why login acceptance
+        itself gates on valid_usernames instead."""
         if self.username_wordlist_path is None:
             return None
         return username in _load_wordlist(self.username_wordlist_path)
@@ -134,8 +157,8 @@ class CredentialPolicy(BaseModel):
             return True
         if any(c.username == username and c.password == password for c in self.allow_list):
             return True
-        if self.username_wordlist_path and self.password_wordlist_path:
-            return self.is_known_username(username) and self.is_known_password(password)
+        if username in self.valid_usernames and self.password_wordlist_path:
+            return bool(self.is_known_password(password))
         return False
 
 

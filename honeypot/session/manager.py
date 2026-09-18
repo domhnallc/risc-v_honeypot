@@ -20,7 +20,7 @@ from honeypot.config.schema import HoneypotConfig
 from honeypot.fetcher.fetcher import FetchResult, fetch_and_quarantine
 from honeypot.fetcher.queue import DownloadJob, enqueue_job, make_job
 from honeypot.logging.events import EventLogger, TranscriptWriter
-from honeypot.shell.commands import dispatch
+from honeypot.shell.commands import dispatch, split_command_line
 from honeypot.shell.filesystem import FakeFilesystem
 from honeypot.shell import persona as persona_render
 
@@ -78,6 +78,7 @@ class SessionManager:
         self.should_exit = False
         self._connect_time = time.monotonic()
         self._command_count = 0
+        self._closed = False
 
     # -- lifecycle -----------------------------------------------------
 
@@ -88,6 +89,11 @@ class SessionManager:
         )
 
     def on_disconnect(self, reason: str) -> None:
+        # Idempotent: an SSH connection can outlive several exec channels, so
+        # both the channel handler and connection_lost may call this.
+        if self._closed:
+            return
+        self._closed = True
         duration = time.monotonic() - self._connect_time
         self.events.session_closed(self.session_id, duration, reason)
         self.transcript.close()
@@ -125,11 +131,34 @@ class SessionManager:
     # -- commands ----------------------------------------------------------
 
     async def handle_command(self, raw: str) -> str:
+        """Log the input line once, then run each `;` / `&&` / `||` segment.
+
+        Real droppers send one-liners like `cd /tmp || cd /var/run; wget A;
+        chmod +x A; ./A` -- dispatching the line as a single command meant
+        the wget was never seen. Exit status is tracked only well enough to
+        pick the right arm of `&&` / `||` (skipped segments leave it alone,
+        as in a real shell).
+        """
         self._command_count += 1
         tokens = raw.strip().split()
         command_name = tokens[0] if tokens else ""
-        result = dispatch(raw, self.fs, self.config.persona, self.username)
         self.events.command_input(self.session_id, raw, command_name, tokens[1:])
+
+        segments = split_command_line(raw.rstrip("\n").rstrip("\r")) or [(";", "")]
+        outputs: list[str] = []
+        status = 0
+        for op, segment in segments:
+            if (op == "&&" and status != 0) or (op == "||" and status == 0):
+                continue
+            output, status = await self._run_segment(segment)
+            if output:
+                outputs.append(output)
+            if self.should_exit:
+                break
+        return "\n".join(outputs)
+
+    async def _run_segment(self, raw: str) -> tuple[str, int]:
+        result = dispatch(raw, self.fs, self.config.persona, self.username)
         if result.exit_session:
             self.should_exit = True
 
@@ -162,9 +191,9 @@ class SessionManager:
                 arch_mismatch=fetch_result.arch_mismatch,
                 error=fetch_result.error,
             )
-            return self._render_download_response(req, fetch_result)
+            return self._render_download_response(req, fetch_result), 0 if fetch_result.success else 1
 
-        return result.output
+        return result.output, result.status
 
     async def _fetch_via_queue(self, job: DownloadJob) -> FetchResult:
         """"queued" mode: enqueue the job and poll for the result a separate

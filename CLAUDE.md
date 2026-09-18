@@ -93,6 +93,11 @@ Telnet Listener (asyncio)┘         │
   `output`, an optional `download_request`, an optional `execution_attempt` (set for
   `chmod +x`, `./file`, `sh file`, `/bin/busybox file` — acknowledged with a plausible fake
   success but never touching real permissions or running anything), and `exit_session`.
+  `SessionManager.handle_command` first splits the line on `;`/newline/`&&`/`||`
+  (`split_command_line`, quote-aware, text-only, capped at `MAX_CHAIN_SEGMENTS`) and
+  dispatches each segment, using `CommandResult.status` to pick the `&&`/`||` arm; the SSH
+  listener also runs exec requests (`ssh host "cmd"`) through the same path. Unknown
+  `busybox X` replies `X: applet not found`, which Mirai-family droppers wait for.
   A `--help` check runs first for any command with an entry in
   `honeypot/shell/help_text.py` (BusyBox's own applet help text, not GNU man pages) —
   deliberately excluding `cd`/`exit`/`logout`, since those are ash builtins with no real

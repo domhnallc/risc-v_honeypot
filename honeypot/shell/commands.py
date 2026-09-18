@@ -139,6 +139,73 @@ class CommandResult:
     download_request: DownloadRequest | None = None
     execution_attempt: str | None = None  # target path, if this command tried to run something
     exit_session: bool = False
+    # Shell exit status (0 = success). Only consulted by the `&&` / `||`
+    # chaining logic in SessionManager -- droppers routinely write
+    # `cd /tmp || cd /var/run; wget A || curl B`, and mishandling which arm
+    # runs would either skip the download or fetch it twice.
+    status: int = 0
+
+
+# Upper bound on commands per input line. Each segment may trigger an awaited
+# download, so an unbounded `wget a; wget b; ...` line is a cheap way to tie a
+# session up; real droppers chain a dozen commands at most.
+MAX_CHAIN_SEGMENTS = 30
+
+
+def split_command_line(raw: str) -> list[tuple[str, str]]:
+    """Split one input line on `;`, newline, `&&` and `||`, honouring quotes.
+
+    Returns [(operator_before, segment), ...]; the first operator is always
+    ";". This is a text splitter only -- nothing here interprets or executes
+    anything. A lone `|` or `&` is deliberately NOT a separator: pipes have no
+    stdin model in this fake shell, and `2>&1` / a trailing `&` must survive
+    intact inside their segment.
+    """
+    segments: list[tuple[str, str]] = []
+    buf: list[str] = []
+    op = ";"
+    quote: str | None = None
+    i, n = 0, len(raw)
+
+    def flush(next_op: str) -> None:
+        nonlocal op
+        seg = "".join(buf).strip()
+        buf.clear()
+        if seg:
+            segments.append((op, seg))
+            op = next_op
+        elif segments:
+            op = next_op  # e.g. `a; ; b` or trailing `;` -- keep last real operator
+
+    while i < n:
+        c = raw[i]
+        if quote:
+            buf.append(c)
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+                buf.append(raw[i])
+        elif c in "'\"":
+            quote = c
+            buf.append(c)
+        elif c == "\\" and i + 1 < n:
+            buf.append(c)
+            i += 1
+            buf.append(raw[i])
+        elif c in ";\n":
+            flush(";")
+        elif raw.startswith("&&", i):
+            flush("&&")
+            i += 1
+        elif raw.startswith("||", i):
+            flush("||")
+            i += 1
+        else:
+            buf.append(c)
+        i += 1
+    flush(";")
+    return segments[:MAX_CHAIN_SEGMENTS]
 
 
 def _tokenize(raw: str) -> list[str]:
@@ -230,7 +297,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
     # `busybox` alone (or with its own --help/--list flags) has real output
     # of its own -- only unwrap to "busybox <applet> ..." when the first arg
     # actually looks like an applet name, not one of busybox's own flags.
-    if cmd == "busybox":
+    if cmd in ("busybox", "/bin/busybox"):
         if not args or args[0] == "--help":
             return CommandResult(output=_busybox_banner())
         if args[0] == "--list":
@@ -238,7 +305,22 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
         if args[0] == "--list-full":
             return CommandResult(output="\n".join(f"/bin/{a}" for a in sorted(persona_render.bin_listing())))
         if not args[0].startswith("-"):
-            cmd, args = args[0], args[1:]
+            applet = args[0]
+            if applet in set(persona_render.bin_listing()) | {"busybox"}:
+                cmd, args = applet, args[1:]
+            else:
+                # Mirai-family droppers send `/bin/busybox <MARKER>` and wait
+                # for exactly this reply before moving on to the payload
+                # stage; silence (or "not found") makes them give up, which
+                # is what was ending sessions with zero downloads.
+                # A path-shaped argument (`/bin/busybox ./mal`) is still an
+                # attempt to run something, so it stays logged as one.
+                looks_like_path = "/" in applet or fs.read_file(applet) is not None
+                return CommandResult(
+                    output=f"{applet}: applet not found",
+                    execution_attempt=stripped if looks_like_path else None,
+                    status=127,
+                )
 
     if "--help" in args and cmd in HELP_TEXT:
         return CommandResult(output=HELP_TEXT[cmd])
@@ -246,7 +328,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
     if cmd in _DOWNLOAD_COMMANDS:
         req = _parse_download_args(cmd, args)
         if req is None:
-            return CommandResult(output=f"{cmd}: missing URL")
+            return CommandResult(output=f"{cmd}: missing URL", status=1)
         return CommandResult(output="", download_request=req)
 
     if cmd == "chmod":
@@ -256,12 +338,12 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
         # purpose. Logged as an execution_attempt per spec sec 4.3.
         return CommandResult(output="", execution_attempt=f"chmod {' '.join(args)}".strip())
 
-    if cmd in ("sh", "ash", "/bin/busybox") or cmd.startswith("./") or cmd.startswith("/"):
+    if cmd in ("sh", "ash") or cmd.startswith("./") or cmd.startswith("/"):
         return CommandResult(output="", execution_attempt=stripped)
 
     if cmd == "cd":
         err = fs.chdir(args[0] if args else "/root")
-        return CommandResult(output=err or "")
+        return CommandResult(output=err or "", status=1 if err else 0)
 
     if cmd == "pwd":
         return CommandResult(output=fs.cwd_display())
@@ -271,7 +353,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
         target = positionals[0] if positionals else None
         nodes = fs.listdir_nodes(target)
         if isinstance(nodes, str):
-            return CommandResult(output=nodes)
+            return CommandResult(output=nodes, status=2)
         names = sorted(nodes.keys())
         if "a" not in flags and "A" not in flags:
             names = [n for n in names if not n.startswith(".")]
@@ -317,13 +399,15 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
         if not args:
             return CommandResult(output="")
         outputs = []
+        missing = False
         for path in args:
             content = fs.read_file(path)
             if content is None:
+                missing = True
                 outputs.append(f"cat: {path}: No such file or directory")
             else:
                 outputs.append(content.rstrip("\n"))
-        return CommandResult(output="\n".join(outputs))
+        return CommandResult(output="\n".join(outputs), status=1 if missing else 0)
 
     if cmd == "echo":
         text = " ".join(args)
@@ -532,10 +616,16 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
     if cmd == "df":
         return CommandResult(output="Filesystem           1K-blocks      Used Available Use% Mounted on\n/dev/root               129024     54212     74812  42% /")
 
+    if cmd == "true":
+        return CommandResult(output="")
+
+    if cmd == "false":
+        return CommandResult(output="", status=1)
+
     if cmd in ("exit", "logout"):
         return CommandResult(output="", exit_session=True)
 
     if cmd == "reboot":
         return CommandResult(output="", exit_session=True)
 
-    return CommandResult(output=f"-ash: {cmd}: not found")
+    return CommandResult(output=f"-ash: {cmd}: not found", status=127)

@@ -40,6 +40,8 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         setattr(conn, "_honeypot_server", self)
 
     def connection_lost(self, exc: Exception | None) -> None:
+        if self.session is not None:
+            self.session.on_disconnect("closed")
         if self._limited_ip is not None:
             self.limiter.release(self._limited_ip)
             self._limited_ip = None
@@ -55,7 +57,27 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         return self.session.try_login(username, password)
 
 
+async def _run_exec_command(process: asyncssh.SSHServerProcess, session: SessionManager) -> None:
+    """`ssh user@host "<command>"` (an SSH exec request, no interactive shell).
+
+    This is how most SSH-side botnets deliver their dropper one-liner
+    (paramiko/libssh `exec_command`). Previously only the interactive-shell
+    path existed, so the command was silently discarded and the client saw a
+    connection that just hung until the session cap -- no command logged, no
+    download ever attempted.
+    """
+    command = process.command or ""
+    session.record_recv((command + "\n").encode())
+    output = await session.handle_command(command)
+    reply = output + "\n" if output else ""
+    process.stdout.write(reply)
+    session.record_send(reply.encode())
+
+
 async def _run_process_session(process: asyncssh.SSHServerProcess, session: SessionManager) -> None:
+    if process.command is not None:
+        await _run_exec_command(process, session)
+        return
     process.stdout.write(session.prompt())
     async for line in process.stdin:
         session.record_recv(line.encode())
@@ -80,6 +102,10 @@ async def _handle_process(process: asyncssh.SSHServerProcess, config: HoneypotCo
     session = server.session
     max_seconds = config.listeners.max_session_seconds
     disconnect_reason = "closed"
+    # An exec request is one of possibly several channels on this connection
+    # (paramiko-style bots run one exec_command after another); the session
+    # is closed by connection_lost instead of at the end of each channel.
+    is_exec = process.command is not None
     try:
         if max_seconds > 0:
             await asyncio.wait_for(_run_process_session(process, session), timeout=max_seconds)
@@ -90,7 +116,8 @@ async def _handle_process(process: asyncssh.SSHServerProcess, config: HoneypotCo
     except asyncio.TimeoutError:
         disconnect_reason = "max_duration_exceeded"
     finally:
-        session.on_disconnect(disconnect_reason)
+        if not is_exec or disconnect_reason != "closed":
+            session.on_disconnect(disconnect_reason)
         process.exit(0)
 
 

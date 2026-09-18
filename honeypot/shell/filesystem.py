@@ -120,6 +120,7 @@ class FakeFilesystem:
 
         self._mkdirs("root")
         self._mkdirs("tmp")
+        self._mkdirs("home")
         self._mkdirs("var", "run")
 
     def _resolve(self, path: str, from_dir: list[str] | None = None) -> list[str]:

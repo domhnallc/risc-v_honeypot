@@ -495,3 +495,10 @@ def test_slash_bin_busybox_wget_is_a_download():
 def test_home_directory_exists():
     result = dispatch("ls /home", _fs(), PersonaConfig(arch="riscv64"))
     assert "No such file" not in result.output
+
+
+def test_split_stops_early_on_huge_input():
+    import time
+    start = time.monotonic()
+    assert len(split_command_line("a;" * 500_000)) == MAX_CHAIN_SEGMENTS
+    assert time.monotonic() - start < 1.0

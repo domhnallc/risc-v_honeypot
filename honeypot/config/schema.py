@@ -169,6 +169,13 @@ class FetcherConfig(BaseModel):
     timeout_seconds: float = 15.0
     allowed_protocols: list[str] = Field(default_factory=lambda: ["http", "https"])
     verify_tls: bool = False
+    # Hard cap on fetch attempts (successful or not) per SSH/Telnet session.
+    # Without it one connection could make hundreds of outbound requests a
+    # minute at an arbitrary third party (`wget A; wget B; ...` x many exec
+    # requests), turning the honeypot into a request source that gets the
+    # droplet's IP reported. Set well above what real droppers do -- a Mirai
+    # loader tries one binary per architecture, roughly 10-15 in a session.
+    max_downloads_per_session: int = 20
     # Refuse to connect (initial request *or* mid-fetch redirect) to any
     # address that resolves to loopback/RFC1918/link-local/reserved/
     # multicast -- this is what stops an attacker from using wget/curl to

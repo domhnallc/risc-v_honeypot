@@ -13,7 +13,7 @@ import asyncssh
 from honeypot.config.schema import HoneypotConfig
 from honeypot.listeners.limiter import ConnectionLimiter
 from honeypot.logging.events import EventLogger
-from honeypot.session.manager import SessionManager
+from honeypot.session.manager import MAX_INPUT_CHARS, SessionManager
 
 
 class _HoneypotSSHServer(asyncssh.SSHServer):
@@ -66,7 +66,7 @@ async def _run_exec_command(process: asyncssh.SSHServerProcess, session: Session
     connection that just hung until the session cap -- no command logged, no
     download ever attempted.
     """
-    command = process.command or ""
+    command = (process.command or "")[:MAX_INPUT_CHARS]
     session.record_recv((command + "\n").encode())
     output = await session.handle_command(command)
     reply = output + "\n" if output else ""
@@ -80,6 +80,7 @@ async def _run_process_session(process: asyncssh.SSHServerProcess, session: Sess
         return
     process.stdout.write(session.prompt())
     async for line in process.stdin:
+        line = line[:MAX_INPUT_CHARS]
         session.record_recv(line.encode())
         output = await session.handle_command(line)
         reply = (output + "\n" if output else "")

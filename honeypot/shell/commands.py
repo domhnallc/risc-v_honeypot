@@ -177,7 +177,7 @@ def split_command_line(raw: str) -> list[tuple[str, str]]:
         elif segments:
             op = next_op  # e.g. `a; ; b` or trailing `;` -- keep last real operator
 
-    while i < n:
+    while i < n and len(segments) < MAX_CHAIN_SEGMENTS:
         c = raw[i]
         if quote:
             buf.append(c)

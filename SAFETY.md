@@ -125,6 +125,25 @@ given host:port was open, closed, filtered, or blocked by this guarantee,
 which would itself leak the reconnaissance signal this guarantee exists to
 deny them.
 
+## Resource limits on attacker-driven work
+
+Not one of the numbered guarantees, but they bound what a single hostile
+client can make this process do:
+
+- **Input size**: Telnet drops a connection at 8192 bytes per line; SSH
+  exec commands and interactive lines are truncated to the same
+  `MAX_INPUT_CHARS` before being logged, recorded or echoed.
+- **Commands per line**: `split_command_line` yields at most
+  `MAX_CHAIN_SEGMENTS` (30) segments and stops scanning once it has them.
+- **Outbound fetches**: `fetcher.max_downloads_per_session` (default 20)
+  caps fetch attempts per session; further `wget`/`curl` are logged as
+  failed and answered with an ordinary "can't connect" line. Without it, one
+  connection could aim hundreds of requests a minute at a third party.
+- **Known gap**: `listeners.max_session_seconds` bounds a session's shell or
+  exec channel, not the SSH connection itself; an authenticated client can
+  keep an idle connection open (bounded per source IP by
+  `max_connections_per_ip`).
+
 ## Verifying these guarantees
 
 Run the full test suite, including the static-analysis check:

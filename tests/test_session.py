@@ -293,3 +293,28 @@ def test_exit_in_a_chain_stops_later_segments(config):
     session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
     output = asyncio.run(session.handle_command("exit; echo after"))
     assert session.should_exit and "after" not in output
+
+
+def test_per_session_download_cap_stops_fetch_fan_out(config):
+    """One session must not be able to make unbounded outbound requests at a
+    third party (`wget A; wget B; ...` over and over)."""
+    config.fetcher.max_downloads_per_session = 3
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    line = "; ".join(f"wget http://nonexistent.invalid/f{i} -O f{i}" for i in range(10))
+    asyncio.run(session.handle_command(line))
+    asyncio.run(session.handle_command("wget http://nonexistent.invalid/again -O again"))
+
+    downloads = [e for e in _read_events(config) if e["event"] == "file.download"]
+    assert len([e for e in downloads if e["outcome"] == "requested"]) == 3
+    capped = [e for e in downloads if e.get("error") == "per-session download limit reached"]
+    assert len(capped) == 8  # 7 left in the first line + the follow-up line
+
+
+def test_capped_download_still_looks_like_an_ordinary_wget_failure(config):
+    config.fetcher.max_downloads_per_session = 0
+    logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+    session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+    output = asyncio.run(session.handle_command("wget http://nonexistent.invalid/x -O x"))
+    assert output == "Connecting to nonexistent.invalid\nwget: can't connect to remote host"
+    assert "limit" not in output

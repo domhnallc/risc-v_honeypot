@@ -58,6 +58,11 @@ def new_session_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
+# Longest input line/exec command we will process or record. Matches the
+# Telnet listener's per-line cap; a real dropper one-liner is well under 2 KB.
+MAX_INPUT_CHARS = 8192
+
+
 class SessionManager:
     def __init__(self, src_ip: str, src_port: int, dst_port: int, protocol: str,
                  config: HoneypotConfig, event_logger: EventLogger,
@@ -79,6 +84,7 @@ class SessionManager:
         self._connect_time = time.monotonic()
         self._command_count = 0
         self._closed = False
+        self._download_count = 0
 
     # -- lifecycle -----------------------------------------------------
 
@@ -167,6 +173,16 @@ class SessionManager:
 
         if result.download_request is not None:
             req = result.download_request
+            self._download_count += 1
+            if self._download_count > self.config.fetcher.max_downloads_per_session:
+                self.events.file_download(
+                    self.session_id, url=req.url, protocol=req.protocol,
+                    requested_filename=req.requested_filename, raw_command=raw,
+                    outcome="failed", error="per-session download limit reached",
+                )
+                # Same generic failure line as any unreachable host, so the
+                # cap itself isn't an obvious tell.
+                return f"Connecting to {urlsplit(req.url).netloc or req.url}\nwget: can't connect to remote host", 1
             self.events.file_download(
                 self.session_id, url=req.url, protocol=req.protocol,
                 requested_filename=req.requested_filename, raw_command=raw,

@@ -134,3 +134,36 @@ def test_ssh_exec_requests_are_dispatched_and_logged(tmp_path):
     assert len([e for e in events if e["event"] == "file.execution_attempt"]) == 1
     assert len([e for e in events if e["event"] == "session.closed"]) == 1
     assert len(list((tmp_path / "q").glob("*.bin"))) == 1
+
+
+def test_oversized_ssh_exec_command_is_truncated_before_logging(tmp_path):
+    """Telnet already caps lines at 8 KB; the SSH exec path had no cap, so a
+    single 250 KB request wrote ~1.4 MB to the event log and transcripts."""
+    from honeypot.session.manager import MAX_INPUT_CHARS
+
+    async def run() -> tuple[str, list[dict]]:
+        config = HoneypotConfig(
+            persona=PersonaConfig(arch="riscv64"),
+            credentials=CredentialPolicy(accept_any=True),
+            listeners={"bind_host": "127.0.0.1", "ssh_port": 0, "telnet_enabled": False},
+            logging={"log_dir": str(tmp_path / "logs"), "transcript_dir": str(tmp_path / "transcripts")},
+        )
+        logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+        server = await start_ssh_listener(config, logger, host_key_path=tmp_path / "host_key")
+        try:
+            port = server.get_addresses()[0][1]
+            async with asyncssh.connect("127.0.0.1", port=port, username="root", password="root",
+                                         known_hosts=None) as conn:
+                result = await asyncio.wait_for(
+                    conn.run("echo " + "A" * 250_000, check=False, input=""), timeout=10)
+            await asyncio.sleep(0.2)
+        finally:
+            server.close()
+        events = [json.loads(l) for l in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()]
+        return result.stdout, events
+
+    stdout, events = asyncio.run(run())
+    command_events = [e for e in events if e["event"] == "command.input"]
+    assert len(command_events[0]["raw"]) == MAX_INPUT_CHARS
+    assert len(stdout) <= MAX_INPUT_CHARS
+    assert sum(f.stat().st_size for f in (tmp_path / "transcripts").iterdir()) < 100_000

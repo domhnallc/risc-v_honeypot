@@ -318,3 +318,28 @@ def test_capped_download_still_looks_like_an_ordinary_wget_failure(config):
     output = asyncio.run(session.handle_command("wget http://nonexistent.invalid/x -O x"))
     assert output == "Connecting to nonexistent.invalid\nwget: can't connect to remote host"
     assert "limit" not in output
+
+
+def test_http_404_is_reported_like_busybox_wget_and_logged_as_failed(config):
+    with tempfile.TemporaryDirectory() as d:
+        server = _Server(Path(d))            # serves an empty directory: everything is a 404
+        try:
+            logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+            session = SessionManager("1.2.3.4", 5555, 2222, "telnet", config, logger)
+            output = asyncio.run(session.handle_command(f"wget {server.url('telnetd')}"))
+        finally:
+            server.stop()
+
+    assert output.endswith("wget: server returned error: HTTP/1.1 404 Not Found")
+    outcome = [e for e in _read_events(config) if e["event"] == "file.download" and e["outcome"] != "requested"]
+    assert len(outcome) == 1 and outcome[0]["outcome"] == "failed"
+    assert outcome[0]["http_status"] == 404 and outcome[0]["error"] == "HTTP 404"
+    assert list(Path(config.fetcher.quarantine_dir).glob("*.bin")) == []
+
+
+def test_wget_error_text_for_http_statuses():
+    from honeypot.session.manager import _wget_error_text
+    assert _wget_error_text("HTTP 503") == "server returned error: HTTP/1.1 503 Service Unavailable"
+    assert _wget_error_text("HTTP 599") == "server returned error: HTTP/1.1 599 Error"
+    # A network-level failure still collapses to the one generic line.
+    assert _wget_error_text("Cannot connect to host 10.0.0.5:22") == "can't connect to remote host"

@@ -12,8 +12,10 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 import time
 import uuid
+from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -45,6 +47,18 @@ def _wget_error_text(error: str | None) -> str:
     still-generic message.
     """
     error = error or ""
+    m = re.fullmatch(r"HTTP (\d{3})", error)
+    if m:
+        # Unlike a connect/DNS error, an HTTP status only exists after a real
+        # connection to a public host (the SSRF guard refuses internal
+        # destinations before any request is made), so echoing it -- as real
+        # BusyBox wget does -- tells the attacker nothing about our network.
+        status = int(m.group(1))
+        try:
+            reason = HTTPStatus(status).phrase
+        except ValueError:
+            reason = "Error"
+        return f"server returned error: HTTP/1.1 {status} {reason}"
     if "not permitted" in error or "not yet implemented" in error:
         return "not an http or ftp url"
     if "exceeded max_file_size_bytes" in error:
@@ -226,6 +240,7 @@ class SessionManager:
             detected_machine=fetch_result.detected_machine,
             arch_mismatch=fetch_result.arch_mismatch,
             error=fetch_result.error,
+            http_status=fetch_result.http_status,
         )
 
     # -- stage two: follow-on downloads listed inside a fetched script ------

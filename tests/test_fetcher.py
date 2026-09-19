@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import http.server
+import json
 import os
 import struct
 import threading
@@ -158,3 +159,69 @@ def test_fetch_flags_riscv32_on_riscv64_persona_as_mismatch(http_server):
     assert result.success
     assert result.detected_bitness == 32
     assert result.arch_mismatch is True
+
+
+# -- HTTP status and request fingerprint ----------------------------------------
+
+async def _serve_once(response: bytes, seen: list[bytes]):
+    """A throwaway raw HTTP server: records the request head, replies with `response`."""
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        seen.append(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server, server.sockets[0].getsockname()[1]
+
+
+def _fetch_from_raw(tmp_path, response: bytes, **cfg):
+    seen: list[bytes] = []
+
+    async def scenario():
+        server, port = await _serve_once(response, seen)
+        try:
+            job = make_job("s", "10.0.0.1", f"http://127.0.0.1:{port}/telnetd", "http", "telnetd", "wget")
+            return await fetch_and_quarantine(job, _config(tmp_path, **cfg))
+        finally:
+            server.close()
+    return asyncio.run(scenario()), seen[0].decode("latin-1")
+
+
+@pytest.mark.parametrize("status_line", ["404 Not Found", "403 Forbidden", "500 Internal Server Error"])
+def test_http_error_responses_are_failures_not_samples(tmp_path, status_line):
+    body = b"<html>not the payload you are looking for</html>"
+    response = (f"HTTP/1.1 {status_line}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body
+    result, _ = _fetch_from_raw(tmp_path, response)
+
+    code = int(status_line.split()[0])
+    assert not result.success
+    assert result.http_status == code and result.error == f"HTTP {code}"
+    assert result.sha256 is None and result.quarantine_path is None
+    leftovers = [p for p in (tmp_path / "quarantine").glob("*")
+                 if p.suffix in (".bin", ".json") or p.name.startswith(".tmp-")]
+    assert leftovers == []
+
+
+def test_success_records_status_in_result_and_sidecar(tmp_path):
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+    result, _ = _fetch_from_raw(tmp_path, response)
+    assert result.success and result.http_status == 200
+    sidecar = json.loads(Path(result.quarantine_path).with_suffix(".json").read_text())
+    assert sidecar["http_status"] == 200
+
+
+def test_request_looks_like_busybox_wget_not_python(tmp_path):
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+    _, request = _fetch_from_raw(tmp_path, response)
+    headers = {l.split(":", 1)[0].lower(): l.split(":", 1)[1].strip()
+               for l in request.split("\r\n")[1:] if ":" in l}
+    assert headers["user-agent"] == "Wget"
+    assert "accept-encoding" not in headers      # no gzip: store the bytes a real wget would get
+    assert "accept" not in headers
+    assert "python" not in request.lower() and "aiohttp" not in request.lower()
+
+
+def test_user_agent_is_configurable(tmp_path):
+    response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+    _, request = _fetch_from_raw(tmp_path, response, user_agent="Wget/1.21.4")
+    assert "user-agent: wget/1.21.4" in request.lower()

@@ -169,6 +169,13 @@ class FetcherConfig(BaseModel):
     timeout_seconds: float = 15.0
     allowed_protocols: list[str] = Field(default_factory=lambda: ["http", "https"])
     verify_tls: bool = False
+    # What the fetcher announces itself as. The attacker's own script ran
+    # `wget`/`busybox wget`/`curl` on a BusyBox device, which sends
+    # "User-Agent: Wget"; aiohttp's default ("Python/3.x aiohttp/x.y") is both
+    # a fingerprint of this fetcher and something droppers' servers commonly
+    # refuse or answer differently. Not the persona's wget *version* on
+    # purpose: BusyBox's applet sends the bare token.
+    user_agent: str = "Wget"
     # Hard cap on fetch attempts (successful or not) per SSH/Telnet session.
     # Without it one connection could make hundreds of outbound requests a
     # minute at an arbitrary third party (`wget A; wget B; ...` x many exec

@@ -40,6 +40,10 @@ class FetchResult:
     arch_mismatch: bool | None = None
     quarantine_path: str | None = None
     error: str | None = None
+    # Final HTTP status (after redirects) when a response was received at all.
+    # 4xx/5xx is a failure -- an error page is not a sample -- but the status
+    # is kept because "the C2 answered 403" is itself worth knowing.
+    http_status: int | None = None
     # Stage two (see honeypot/fetcher/stage2.py). In queued mode the session
     # process cannot read the quarantine, so the worker reports what it found
     # and queued here; each dict is {job_id, url, protocol, requested_filename, depth}.
@@ -66,6 +70,7 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
     sha256 = hashlib.sha256()
     md5 = hashlib.md5()
     size = 0
+    http_status: int | None = None
     timeout = aiohttp.ClientTimeout(total=config.timeout_seconds)
 
     try:
@@ -79,8 +84,21 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         # more than wrapping the resolver).
         connector_cls = SafeTCPConnector if config.block_private_networks else aiohttp.TCPConnector
         connector = connector_cls(ssl=None if config.verify_tls else False)
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as http:
+        # Look like the BusyBox wget the attacker's own script would have
+        # used: its User-Agent, and none of aiohttp's automatic Accept /
+        # Accept-Encoding headers -- the latter would also make a server
+        # gzip the payload, so we would store something other than the bytes
+        # a real wget receives.
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector,
+            headers={"User-Agent": config.user_agent},
+            skip_auto_headers=("Accept", "Accept-Encoding"),
+        ) as http:
             async with http.get(job.url) as resp:
+                http_status = resp.status
+                if http_status >= 400:
+                    return FetchResult(success=False, http_status=http_status,
+                                       error=f"HTTP {http_status}")
                 with tmp_path.open("wb") as fh:
                     async for chunk in resp.content.iter_chunked(65536):
                         size += len(chunk)
@@ -140,6 +158,7 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         detected_machine=detected.machine,
         arch_mismatch=arch_mismatch,
         quarantine_path=str(final_path),
+        http_status=http_status,
     )
 
     if not already_quarantined:
@@ -157,6 +176,7 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
             "detected_bitness": result.detected_bitness,
             "detected_machine": result.detected_machine,
             "arch_mismatch": arch_mismatch,
+            "http_status": http_status,
             "depth": job.depth,
             "parent_sha256": job.parent_sha256,
         }, indent=2))

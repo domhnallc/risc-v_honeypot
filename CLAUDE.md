@@ -124,7 +124,9 @@ Telnet Listener (asyncio)┘         │
 - **`honeypot/fetcher/`**: `queue.py` defines `DownloadJob`/`make_job` and the file-based
   atomic job queue (`enqueue_job`/`claim_pending_jobs`, used by the standalone worker, not
   by the in-process v1 path); `elf.py` is the static detector; `fetcher.py` streams the
-  HTTP(S) response with a byte cap and timeout, hashes while streaming, then quarantines;
+  HTTP(S) response with a byte cap and timeout, hashes while streaming, then quarantines
+  (4xx/5xx is a failure, not a sample; `http_status` is recorded; requests carry BusyBox
+  wget's `User-Agent: Wget` -- `fetcher.user_agent` -- and no automatic `Accept*` headers);
   `worker.py` is the `python -m honeypot.fetcher.worker <config>` standalone entry point
   for running the fetcher as a physically separate process.
 - **`honeypot/config/schema.py`** defines the pydantic models (`PersonaConfig`,

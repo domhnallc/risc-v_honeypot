@@ -260,10 +260,16 @@ def parse_download_args(cmd: str, args: list[str]) -> DownloadRequest | None:
         tok = args[i]
         if "://" in tok:
             url = tok
-        elif tok in ("-O", "-o") and i + 1 < len(args):
-            explicit_out = args[i + 1]
+        elif cmd == "curl":
+            # curl: `-o FILE` names the output; capital `-O` takes NO argument
+            # (it means "use the remote name"), so the next word is the URL.
+            if tok == "-o" and i + 1 < len(args):
+                explicit_out = args[i + 1]
+        elif tok == "-O" and i + 1 < len(args):
+            explicit_out = args[i + 1]      # wget: `-O FILE`
         elif tok.startswith("-O") and len(tok) > 2:
             explicit_out = tok[2:]
+        # (wget's lowercase `-o` is a log file, not the output: ignored.)
 
     if cmd == "tftp":
         # BusyBox: `tftp [-g|-p] [-l LOCAL] [-r REMOTE] [-b SIZE] HOST [PORT]`;

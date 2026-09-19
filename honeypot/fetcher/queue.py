@@ -25,16 +25,21 @@ class DownloadJob:
     requested_filename: str
     raw_command: str
     timestamp: float
+    # Stage two lineage: 0 = requested directly by the attacker, n = found by
+    # scanning the script (sha256 parent_sha256) that was itself at depth n-1.
+    depth: int = 0
+    parent_sha256: str | None = None
 
 
 def make_job(session_id: str, src_ip: str, url: str, protocol: str,
-             requested_filename: str, raw_command: str) -> DownloadJob:
+             requested_filename: str, raw_command: str,
+             depth: int = 0, parent_sha256: str | None = None) -> DownloadJob:
     ts = time.time()
     return DownloadJob(
         job_id=f"{ts:.6f}-{uuid.uuid4().hex[:8]}",
         session_id=session_id, src_ip=src_ip, url=url, protocol=protocol,
         requested_filename=requested_filename, raw_command=raw_command,
-        timestamp=ts,
+        timestamp=ts, depth=depth, parent_sha256=parent_sha256,
     )
 
 

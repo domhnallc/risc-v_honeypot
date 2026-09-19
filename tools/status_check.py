@@ -55,6 +55,16 @@ def _command_patterns(report: Report) -> Counter[tuple[str, ...]]:
     return patterns
 
 
+def _download_line(d: dict) -> str:
+    """One row of the download list. Stage-two fetches (URLs found by
+    scanning a captured script) are tagged so they are not mistaken for
+    something the attacker typed, and ELF samples show their architecture --
+    the RISC-V ones are what this whole project is looking for."""
+    tag = f"[stage {d['stage']}] " if d.get("stage") else ""
+    arch = f"  {d['detected_machine']}" if d.get("detected_machine") else ""
+    return f"  {d.get('timestamp')}  {d.get('outcome', '-'):8s}  {tag}{d.get('url')}{arch}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", nargs="?", help="honeypot config YAML, used to find the events log by default")
@@ -108,7 +118,7 @@ def main() -> None:
     if report.downloads:
         print("\nDownload attempts:")
         for d in report.downloads:
-            print(f"  {d.get('timestamp')}  {d.get('outcome', '-'):8s}  {d.get('url')}")
+            print(_download_line(d))
 
     if report.repeat_visitor_ips:
         print(f"\nTop {args.top} repeat visitors:")

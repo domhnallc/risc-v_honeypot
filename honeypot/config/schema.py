@@ -176,6 +176,18 @@ class FetcherConfig(BaseModel):
     # droplet's IP reported. Set well above what real droppers do -- a Mirai
     # loader tries one binary per architecture, roughly 10-15 in a session.
     max_downloads_per_session: int = 20
+    # Stage two: when a fetched file is a text script (a dropper's `bins.sh`),
+    # statically extract its wget/curl URLs and fetch those too -- the script
+    # itself is never run (see honeypot/fetcher/script_scan.py). The limits
+    # below exist because the script is attacker-authored: without them a
+    # hostile script is a way to aim many requests at a third party.
+    stage2_enabled: bool = True
+    stage2_max_depth: int = 2                # script -> script -> binaries
+    stage2_max_urls_per_script: int = 30
+    stage2_max_per_session: int = 60         # across every script the session fetched
+    stage2_dedupe_seconds: float = 3600.0    # same URL is not re-fetched inside this window
+    stage2_max_per_host: int = 40            # distinct follow-up URLs per host inside that window
+    stage2_wait_seconds: float = 600.0       # queued mode: how long the session process waits to log outcomes
     # Refuse to connect (initial request *or* mid-fetch redirect) to any
     # address that resolves to loopback/RFC1918/link-local/reserved/
     # multicast -- this is what stops an attacker from using wget/curl to

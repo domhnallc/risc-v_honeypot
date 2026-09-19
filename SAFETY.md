@@ -139,6 +139,19 @@ client can make this process do:
   caps fetch attempts per session; further `wget`/`curl` are logged as
   failed and answered with an ordinary "can't connect" line. Without it, one
   connection could aim hundreds of requests a minute at a third party.
+- **Stage-two fetches** (URLs found inside a captured script): the script is
+  scanned as text only and never run. Every follow-up goes through the same
+  `fetch_and_quarantine` as an attacker-typed `wget` (SSRF guard, size cap,
+  timeout, http/https only) and is bounded per script
+  (`stage2_max_urls_per_script`), per session (`stage2_max_per_session`), per
+  target host (`stage2_max_per_host`), by a per-URL cooldown
+  (`stage2_dedupe_seconds`) and by depth (`stage2_max_depth`). The per-host cap is
+  the one that stops a script listing endless distinct URLs at one third party.
+  In the docker deployment the session container never reads the quarantine:
+  the worker does the scanning, and the session treats the worker's result
+  (including job ids) as untrusted. Note the per-host cap covers stage two
+  only; the attacker's own typed `wget`s are bounded per session
+  (`max_downloads_per_session`) but not per host.
 - **Known gap**: `listeners.max_session_seconds` bounds a session's shell or
   exec channel, not the SSH connection itself; an authenticated client can
   keep an idle connection open (bounded per source IP by

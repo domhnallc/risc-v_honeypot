@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -20,11 +21,14 @@ from honeypot.config.schema import HoneypotConfig
 from honeypot.fetcher.fetcher import FetchResult, fetch_and_quarantine
 from honeypot.fetcher.queue import DownloadJob, enqueue_job, make_job
 from honeypot.logging.events import EventLogger, TranscriptWriter
+from honeypot.fetcher.stage2 import Stage2Plan, plan_followups
 from honeypot.shell.commands import dispatch, split_command_line
 from honeypot.shell.filesystem import FakeFilesystem
 from honeypot.shell import persona as persona_render
 
 _QUEUE_POLL_INTERVAL_SECONDS = 0.3
+_log = logging.getLogger(__name__)
+_STAGE2_POLL_INTERVAL_SECONDS = 1.0
 _QUEUE_RESULT_GRACE_SECONDS = 5.0  # slack on top of fetcher.timeout_seconds for queue latency
 
 
@@ -63,6 +67,11 @@ def new_session_id() -> str:
 MAX_INPUT_CHARS = 8192
 
 
+# Strong references to in-flight stage-two tasks: they outlive the command that
+# started them (and often the session), and asyncio only weakly references tasks.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
 class SessionManager:
     def __init__(self, src_ip: str, src_port: int, dst_port: int, protocol: str,
                  config: HoneypotConfig, event_logger: EventLogger,
@@ -85,6 +94,7 @@ class SessionManager:
         self._command_count = 0
         self._closed = False
         self._download_count = 0
+        self._stage2_tasks: list[asyncio.Task] = []
 
     # -- lifecycle -----------------------------------------------------
 
@@ -199,17 +209,136 @@ class SessionManager:
                 self.session_id, url=req.url, protocol=req.protocol,
                 requested_filename=req.requested_filename, raw_command=raw,
                 outcome="success" if fetch_result.success else "failed",
-                sha256=fetch_result.sha256, md5=fetch_result.md5,
-                size_bytes=fetch_result.size_bytes,
-                detected_type=fetch_result.detected_type,
-                detected_bitness=fetch_result.detected_bitness,
-                detected_machine=fetch_result.detected_machine,
-                arch_mismatch=fetch_result.arch_mismatch,
-                error=fetch_result.error,
+                **self._result_fields(fetch_result),
             )
+            self._start_stage2(job, fetch_result)
             return self._render_download_response(req, fetch_result), 0 if fetch_result.success else 1
 
         return result.output, result.status
+
+    @staticmethod
+    def _result_fields(fetch_result: FetchResult) -> dict:
+        return dict(
+            sha256=fetch_result.sha256, md5=fetch_result.md5,
+            size_bytes=fetch_result.size_bytes,
+            detected_type=fetch_result.detected_type,
+            detected_bitness=fetch_result.detected_bitness,
+            detected_machine=fetch_result.detected_machine,
+            arch_mismatch=fetch_result.arch_mismatch,
+            error=fetch_result.error,
+        )
+
+    # -- stage two: follow-on downloads listed inside a fetched script ------
+    #
+    # Runs in the background so the attacker's own `wget` is answered at once.
+    # Inline mode plans and fetches here (this process *is* the fetcher);
+    # queued mode never reads the quarantine -- the worker plans, queues the
+    # follow-ups and reports them in the parent's result, and this side only
+    # polls for their outcomes to log.
+
+    def _start_stage2(self, job: DownloadJob, fetch_result: FetchResult) -> None:
+        fetcher = self.config.fetcher
+        if not fetcher.stage2_enabled or not fetch_result.success:
+            return
+        if fetcher.mode == "queued":
+            if not (fetch_result.stage2_jobs or fetch_result.stage2_found or fetch_result.stage2_skipped):
+                return
+            coro = self._collect_stage2_queued(job, fetch_result)
+        else:
+            coro = self._run_stage2_inline(job, fetch_result)
+        task = asyncio.ensure_future(coro)
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        self._stage2_tasks.append(task)
+
+    async def wait_stage2(self) -> None:
+        """Wait for this session's stage-two work (used by tests and shutdown)."""
+        await asyncio.gather(*self._stage2_tasks, return_exceptions=True)
+
+    def _log_stage2_scan(self, parent_url: str, parent_sha256: str | None, depth: int,
+                         found: int, queued: int, skipped: int) -> None:
+        if found or skipped:
+            self.events.stage2_scan(
+                self.session_id, parent_url=parent_url, parent_sha256=parent_sha256,
+                stage=depth + 1, urls_found=found, urls_queued=queued, skipped=skipped,
+            )
+
+    def _log_stage2_outcome(self, url: str, protocol: str, filename: str, depth: int,
+                            parent_url: str, parent_sha256: str | None,
+                            fetch_result: FetchResult) -> None:
+        self.events.file_download(
+            self.session_id, url=url, protocol=protocol, requested_filename=filename,
+            raw_command=f"(stage {depth + 1}: listed in {parent_url})",
+            outcome="success" if fetch_result.success else "failed",
+            stage=depth + 1, parent_url=parent_url, parent_sha256=parent_sha256,
+            **self._result_fields(fetch_result),
+        )
+
+    async def _run_stage2_inline(self, job: DownloadJob, fetch_result: FetchResult) -> None:
+        try:
+            pending: list[tuple[DownloadJob, FetchResult]] = [(job, fetch_result)]
+            while pending:
+                parent_job, parent_result = pending.pop(0)
+                plan: Stage2Plan = plan_followups(parent_job, parent_result, self.config.fetcher)
+                self._log_stage2_scan(parent_job.url, parent_result.sha256, parent_job.depth,
+                                      plan.found, len(plan.jobs), plan.skipped)
+                for child in plan.jobs:
+                    child_result = await fetch_and_quarantine(child, self.config.fetcher,
+                                                               self.config.persona.arch)
+                    self._log_stage2_outcome(child.url, child.protocol, child.requested_filename,
+                                             child.depth, parent_job.url, parent_result.sha256,
+                                             child_result)
+                    pending.append((child, child_result))
+        except Exception:  # noqa: BLE001 - a background task has nobody to raise to
+            _log.exception("stage-two fetch failed for session %s", self.session_id)
+
+    async def _collect_stage2_queued(self, job: DownloadJob, fetch_result: FetchResult) -> None:
+        try:
+            self._log_stage2_scan(job.url, fetch_result.sha256, job.depth, fetch_result.stage2_found,
+                                  len(fetch_result.stage2_jobs or []), fetch_result.stage2_skipped)
+            # (parent url, parent sha256, follow-up job summary)
+            pending = [(job.url, fetch_result.sha256, info) for info in fetch_result.stage2_jobs or []]
+            deadline = time.monotonic() + self.config.fetcher.stage2_wait_seconds
+            processing = Path(self.config.fetcher.jobs_dir) / ".processing"
+            while pending and time.monotonic() < deadline:
+                waiting = []
+                for parent_url, parent_sha, info in pending:
+                    # The result file comes from the fetcher container, the
+                    # more exposed of the two: treat its job_id as untrusted
+                    # and never let it steer a path outside .processing/.
+                    job_id = str(info.get("job_id", ""))
+                    child = (self._load_fetch_result(processing / f"{job_id}.result.json")
+                             if job_id and Path(job_id).name == job_id and job_id not in (".", "..")
+                             else FetchResult(success=False, error="invalid follow-up job id"))
+                    if child is None:
+                        waiting.append((parent_url, parent_sha, info))
+                        continue
+                    self._log_stage2_outcome(info["url"], info["protocol"], info["requested_filename"],
+                                             info["depth"], parent_url, parent_sha, child)
+                    self._log_stage2_scan(info["url"], child.sha256, info["depth"], child.stage2_found,
+                                          len(child.stage2_jobs or []), child.stage2_skipped)
+                    waiting.extend((info["url"], child.sha256, grandchild)
+                                   for grandchild in child.stage2_jobs or [])
+                pending = waiting
+                if pending:
+                    await asyncio.sleep(_STAGE2_POLL_INTERVAL_SECONDS)
+            for parent_url, parent_sha, info in pending:
+                self._log_stage2_outcome(
+                    info["url"], info["protocol"], info["requested_filename"], info["depth"],
+                    parent_url, parent_sha,
+                    FetchResult(success=False, error="timed out waiting for isolated fetcher"))
+        except Exception:  # noqa: BLE001
+            _log.exception("stage-two collection failed for session %s", self.session_id)
+
+    @staticmethod
+    def _load_fetch_result(result_path: Path) -> FetchResult | None:
+        """The worker's result file as a FetchResult, or None if not there (yet)."""
+        try:
+            data = json.loads(result_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        result_fields = {f.name for f in dataclasses.fields(FetchResult)}
+        return FetchResult(**{k: v for k, v in data.items() if k in result_fields})
 
     async def _fetch_via_queue(self, job: DownloadJob) -> FetchResult:
         """"queued" mode: enqueue the job and poll for the result a separate

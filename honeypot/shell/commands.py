@@ -22,7 +22,7 @@ from honeypot.shell.filesystem import FakeDir, FakeDynamicFile, FakeFilesystem, 
 from honeypot.shell import sysstate
 from honeypot.shell.help_text import HELP_TEXT
 
-_DOWNLOAD_COMMANDS = {"wget", "curl", "tftp"}
+DOWNLOAD_COMMANDS = {"wget", "curl", "tftp"}
 
 # Deliberately NOT in HELP_TEXT / this short-circuit: cd, exit, logout. Real
 # BusyBox ash implements those as shell builtins with no --help handling of
@@ -152,14 +152,15 @@ class CommandResult:
 MAX_CHAIN_SEGMENTS = 30
 
 
-def split_command_line(raw: str) -> list[tuple[str, str]]:
+def split_command_line(raw: str, limit: int = MAX_CHAIN_SEGMENTS) -> list[tuple[str, str]]:
     """Split one input line on `;`, newline, `&&` and `||`, honouring quotes.
 
     Returns [(operator_before, segment), ...]; the first operator is always
     ";". This is a text splitter only -- nothing here interprets or executes
     anything. A lone `|` or `&` is deliberately NOT a separator: pipes have no
     stdin model in this fake shell, and `2>&1` / a trailing `&` must survive
-    intact inside their segment.
+    intact inside their segment. `limit` caps the segment count (the default
+    suits interactive input; the stage-two script scanner passes a larger one).
     """
     segments: list[tuple[str, str]] = []
     buf: list[str] = []
@@ -177,7 +178,7 @@ def split_command_line(raw: str) -> list[tuple[str, str]]:
         elif segments:
             op = next_op  # e.g. `a; ; b` or trailing `;` -- keep last real operator
 
-    while i < n and len(segments) < MAX_CHAIN_SEGMENTS:
+    while i < n and len(segments) < limit:
         c = raw[i]
         if quote:
             buf.append(c)
@@ -205,10 +206,10 @@ def split_command_line(raw: str) -> list[tuple[str, str]]:
             buf.append(c)
         i += 1
     flush(";")
-    return segments[:MAX_CHAIN_SEGMENTS]
+    return segments[:limit]
 
 
-def _tokenize(raw: str) -> list[str]:
+def tokenize(raw: str) -> list[str]:
     try:
         return shlex.split(raw)
     except ValueError:
@@ -251,7 +252,7 @@ def _grep_matches(needle: str, haystack: str, ignore_case: bool) -> bool:
     return needle in haystack
 
 
-def _parse_download_args(cmd: str, args: list[str]) -> DownloadRequest | None:
+def parse_download_args(cmd: str, args: list[str]) -> DownloadRequest | None:
     url = None
     explicit_out = None
     it = iter(range(len(args)))
@@ -309,7 +310,7 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
     if not stripped:
         return CommandResult(output="")
 
-    tokens = _tokenize(stripped)
+    tokens = tokenize(stripped)
     cmd, args = tokens[0], tokens[1:]
 
     # busybox wget/tftp/curl are commonly invoked as `busybox wget ...`, but
@@ -344,8 +345,8 @@ def dispatch(raw: str, fs: FakeFilesystem, persona: PersonaConfig,
     if "--help" in args and cmd in HELP_TEXT:
         return CommandResult(output=HELP_TEXT[cmd])
 
-    if cmd in _DOWNLOAD_COMMANDS:
-        req = _parse_download_args(cmd, args)
+    if cmd in DOWNLOAD_COMMANDS:
+        req = parse_download_args(cmd, args)
         if req is None:
             return CommandResult(output=f"{cmd}: missing URL", status=1)
         return CommandResult(output="", download_request=req)

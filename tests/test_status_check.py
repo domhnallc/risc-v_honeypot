@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from dashboard import Report  # noqa: E402
-from status_check import _command_patterns, _filter_excluded_ips  # noqa: E402
+from status_check import _command_patterns, _download_line, _filter_excluded_ips  # noqa: E402
 
 
 def _events(*rows):
@@ -58,3 +58,11 @@ def test_command_patterns_groups_by_session_and_ignores_failed_logins():
     assert patterns[("id", "uname -m")] == 1
     assert patterns[()] == 1
     assert sum(patterns.values()) == 2  # only the two login.success sessions
+
+
+def test_download_line_tags_stage_two_and_shows_elf_architecture():
+    plain = _download_line({"timestamp": "T", "outcome": "success", "url": "http://x/bins.sh"})
+    assert plain == "  T  success   http://x/bins.sh"
+    stage2 = _download_line({"timestamp": "T", "outcome": "success", "url": "http://x/a.riscv64",
+                             "stage": 2, "detected_machine": "EM_RISCV"})
+    assert "[stage 2] http://x/a.riscv64" in stage2 and stage2.endswith("EM_RISCV")

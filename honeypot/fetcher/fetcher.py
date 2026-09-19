@@ -40,6 +40,12 @@ class FetchResult:
     arch_mismatch: bool | None = None
     quarantine_path: str | None = None
     error: str | None = None
+    # Stage two (see honeypot/fetcher/stage2.py). In queued mode the session
+    # process cannot read the quarantine, so the worker reports what it found
+    # and queued here; each dict is {job_id, url, protocol, requested_filename, depth}.
+    stage2_jobs: list[dict] | None = None
+    stage2_found: int = 0
+    stage2_skipped: int = 0
 
 
 async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
@@ -151,6 +157,8 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
             "detected_bitness": result.detected_bitness,
             "detected_machine": result.detected_machine,
             "arch_mismatch": arch_mismatch,
+            "depth": job.depth,
+            "parent_sha256": job.parent_sha256,
         }, indent=2))
         os.chmod(sidecar, 0o440)
 

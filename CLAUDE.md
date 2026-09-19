@@ -110,6 +110,17 @@ Telnet Listener (asyncio)┘         │
   busybox-applet listing) — there is no path from any operation here to the real host
   filesystem. `copy_node`/`move_node` back `cp`/`mv` (object-graph copy/reparent, no real
   inode model); `listdir_nodes` backs `ls -l`'s per-entry file-vs-directory distinction.
+- **Stage two** (`honeypot/fetcher/script_scan.py`, `stage2.py`): when a fetched file is a
+  text script (a dropper's `bins.sh`), the *fetcher side* reads the quarantined bytes,
+  scans them as text for `wget`/`curl` URLs (plain `NAME=value` and one-level
+  `for ... in ...; do ...; done` expansion; anything unresolvable is skipped and counted)
+  and fetches those through the normal `fetch_and_quarantine` path -- the script is never
+  run. It lives fetcher-side because the docker session container deliberately cannot read
+  `var/quarantine`: in queued mode the worker plans and queues the follow-ups and reports
+  them in the parent's result, and `SessionManager` only polls for outcomes to log
+  (`file.download` with `stage`/`parent_sha256`, plus `file.stage2_scan`). Bounded by
+  `fetcher.stage2_*` (per script, per session, per host, per-URL cooldown, depth) because the
+  script is attacker-authored. Disable with `fetcher.stage2_enabled: false`.
 - **`honeypot/fetcher/`**: `queue.py` defines `DownloadJob`/`make_job` and the file-based
   atomic job queue (`enqueue_job`/`claim_pending_jobs`, used by the standalone worker, not
   by the in-process v1 path); `elf.py` is the static detector; `fetcher.py` streams the

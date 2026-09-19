@@ -77,6 +77,10 @@ class EventLogger:
     def file_download(self, session_id: str, **metadata: Any) -> None:
         self.log("file.download", session_id=session_id, **metadata)
 
+    def stage2_scan(self, session_id: str, **metadata: Any) -> None:
+        """A fetched script was scanned for follow-on download URLs."""
+        self.log("file.stage2_scan", session_id=session_id, **metadata)
+
     def execution_attempt(self, session_id: str, raw: str, target: str) -> None:
         self.log("file.execution_attempt", session_id=session_id, raw=raw, target=target)
 

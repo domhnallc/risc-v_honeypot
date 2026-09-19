@@ -136,7 +136,10 @@ Telnet Listener (asyncio)┘         │
   seems to be missing or misnamed.
 - **`honeypot/logging/events.py`** provides `EventLogger` (one JSON object per line to
   `var/logs/events.jsonl`: `session.connect`/`session.closed`, `login.success`/`failed`,
-  `command.input`, `file.download`, `file.execution_attempt`) and `TranscriptWriter` (one
+  `command.input`, `file.download`, `file.execution_attempt`, plus
+  `session.client_version` (SSH banner, logged once the version exchange has happened),
+  `auth.attempt` (offered public keys with fingerprints, and "none" probes that never tried a
+  credential) and `file.stage2_scan`) and `TranscriptWriter` (one
   JSONL file per session under `var/transcripts/`, base64-encoded raw send/recv bytes).
 
 **Why `honeypot/logging/` and not a top-level `logging/`**: the spec's directory sketch

@@ -81,3 +81,24 @@ def test_unknown_bytes():
 def test_arch_matches_persona_returns_none_for_non_elf():
     detected = elf.detect(b"\x1f\x8b")
     assert elf.arch_matches_persona(detected, "riscv64") is None
+
+
+def test_names_the_architectures_seen_in_iot_dropper_kits():
+    # Straight from a captured dropper that served one build per name:
+    # m68k, MIPS, PowerPC, SuperH, SPARC and x86-64, all 32-bit except the last.
+    expected = {4: "EM_68K", 8: "EM_MIPS", 20: "EM_PPC", 42: "EM_SH", 2: "EM_SPARC", 62: "EM_X86_64"}
+    for e_machine, name in expected.items():
+        detected = elf.detect(_make_elf_header(ei_class=1, ei_data=2, e_machine=e_machine))
+        assert detected.machine == name, e_machine
+
+
+def test_unlisted_machines_are_reported_as_unknown_not_guessed():
+    detected = elf.detect(_make_elf_header(ei_class=1, ei_data=1, e_machine=9999))
+    assert detected.machine == "EM_UNKNOWN(9999)"
+
+
+def test_endianness_distinguishes_mips_from_mipsel():
+    be = elf.detect(_make_elf_header(ei_class=1, ei_data=2, e_machine=8))
+    le = elf.detect(_make_elf_header(ei_class=1, ei_data=1, e_machine=8))
+    assert (be.machine, be.endianness) == ("EM_MIPS", "big")
+    assert (le.machine, le.endianness) == ("EM_MIPS", "little")

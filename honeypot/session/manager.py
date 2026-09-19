@@ -128,6 +128,14 @@ class SessionManager:
         self.events.session_closed(self.session_id, duration, reason)
         self.transcript.close()
 
+    def on_client_version(self, client_id: str) -> None:
+        self.client_id = client_id
+        self.events.client_version(self.session_id, client_id)
+
+    def on_auth_attempt(self, method: str, username: str, **details) -> None:
+        self.events.auth_attempt(self.session_id, method=method, username=username,
+                                 src_ip=self.src_ip, **details)
+
     def record_recv(self, data: bytes) -> None:
         self.transcript.record("recv", data)
 
@@ -238,6 +246,7 @@ class SessionManager:
             detected_type=fetch_result.detected_type,
             detected_bitness=fetch_result.detected_bitness,
             detected_machine=fetch_result.detected_machine,
+            detected_endianness=fetch_result.detected_endianness,
             arch_mismatch=fetch_result.arch_mismatch,
             error=fetch_result.error,
             http_status=fetch_result.http_status,

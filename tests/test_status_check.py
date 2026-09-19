@@ -65,4 +65,11 @@ def test_download_line_tags_stage_two_and_shows_elf_architecture():
     assert plain == "  T  success   http://x/bins.sh"
     stage2 = _download_line({"timestamp": "T", "outcome": "success", "url": "http://x/a.riscv64",
                              "stage": 2, "detected_machine": "EM_RISCV"})
-    assert "[stage 2] http://x/a.riscv64" in stage2 and stage2.endswith("EM_RISCV")
+    assert "[stage 2] http://x/a.riscv64" in stage2 and stage2.endswith("EM_RISCV")   # no bitness/endianness logged: just the name
+
+
+def test_download_line_shows_bitness_and_endianness():
+    line = _download_line({"timestamp": "T", "outcome": "success", "url": "http://x/gnome", "stage": 2,
+                           "detected_machine": "EM_MIPS", "detected_bitness": 32,
+                           "detected_endianness": "big"})
+    assert line.endswith("EM_MIPS 32-bit big")

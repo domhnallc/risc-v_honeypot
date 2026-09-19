@@ -225,3 +225,22 @@ def test_user_agent_is_configurable(tmp_path):
     response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
     _, request = _fetch_from_raw(tmp_path, response, user_agent="Wget/1.21.4")
     assert "user-agent: wget/1.21.4" in request.lower()
+
+
+def test_result_and_sidecar_record_endianness(tmp_path):
+    # Big-endian 32-bit MIPS: the same e_machine as MIPSEL, told apart only by EI_DATA.
+    ident = bytearray(64)
+    ident[0:4] = b"\x7fELF"
+    ident[4], ident[5], ident[6] = 1, 2, 1
+    struct.pack_into(">H", ident, 18, 8)
+    (tmp_path / "www").mkdir()
+    (tmp_path / "www" / "gnome").write_bytes(bytes(ident))
+    server = _Server(tmp_path / "www")
+    try:
+        job = make_job("s", "10.0.0.1", server.url("gnome"), "http", "gnome", "wget")
+        result = asyncio.run(fetch_and_quarantine(job, _config(tmp_path)))
+    finally:
+        server.stop()
+    assert result.detected_machine == "EM_MIPS" and result.detected_endianness == "big"
+    sidecar = json.loads(Path(result.quarantine_path).with_suffix(".json").read_text())
+    assert sidecar["detected_endianness"] == "big"

@@ -373,7 +373,8 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         pill = f"<span class='pill {'ok' if outcome == 'success' else 'bad'}'>{_esc(outcome)}</span>"
         detected = ev.get("detected_type") or "-"
         if ev.get("detected_machine"):
-            detected = f"{detected} / {ev.get('detected_machine')} ({ev.get('detected_bitness')}-bit)"
+            endian = f", {ev['detected_endianness']}-endian" if ev.get("detected_endianness") else ""
+            detected = f"{detected} / {ev.get('detected_machine')} ({ev.get('detected_bitness')}-bit{endian})"
         arch = ev.get("arch_mismatch")
         arch_label = "-" if arch is None else ("MISMATCH" if arch else "match")
         download_rows.append([

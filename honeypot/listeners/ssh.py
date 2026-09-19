@@ -16,6 +16,11 @@ from honeypot.logging.events import EventLogger
 from honeypot.session.manager import MAX_INPUT_CHARS, SessionManager
 
 
+# asyncssh puts no limit on how many public keys a client may offer, and each
+# one we log is a line on disk: bound it per connection.
+_MAX_LOGGED_KEYS = 20
+
+
 class _HoneypotSSHServer(asyncssh.SSHServer):
     def __init__(self, config: HoneypotConfig, event_logger: EventLogger,
                  limiter: ConnectionLimiter) -> None:
@@ -24,36 +29,79 @@ class _HoneypotSSHServer(asyncssh.SSHServer):
         self.limiter = limiter
         self.session: SessionManager | None = None
         self._limited_ip: str | None = None
+        self._conn: asyncssh.SSHServerConnection | None = None
+        self._client_version_reported = False
+        self._auth_username: str | None = None   # last user a client asked to authenticate as
+        self._credential_tried = False           # a password or public key was actually offered
+        self._logged_keys = 0
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
+        self._conn = conn
         peer = conn.get_extra_info("peername") or ("0.0.0.0", 0)
         if not self.limiter.try_acquire(peer[0]):
             conn.abort()  # too many concurrent connections from this source IP
             return
         self._limited_ip = peer[0]
-        client_version = conn.get_extra_info("client_version")
+        # No client_id yet: the version exchange happens after this callback.
+        # See _report_client_version.
         self.session = SessionManager(
             peer[0], peer[1], self.config.listeners.ssh_port, "ssh",
-            self.config, self.event_logger, client_id=client_version,
+            self.config, self.event_logger,
         )
         self.session.on_connect()
         setattr(conn, "_honeypot_server", self)
 
     def connection_lost(self, exc: Exception | None) -> None:
         if self.session is not None:
+            # A client that sent its banner and left without ever reaching
+            # authentication still gets its version recorded here.
+            self._report_client_version()
+            if self._auth_username is not None and not self._credential_tried:
+                # Asked to authenticate as a user, then went away without
+                # offering a password or key: a scanner probing which methods
+                # exist ("none" is the SSH auth method that requests exactly that).
+                self.session.on_auth_attempt("none", self._auth_username)
             self.session.on_disconnect("closed")
         if self._limited_ip is not None:
             self.limiter.release(self._limited_ip)
             self._limited_ip = None
 
+    def _report_client_version(self) -> None:
+        # Not available in connection_made (the version exchange has not
+        # happened yet), which is why session.connect always carried null.
+        if self._client_version_reported or self.session is None or self._conn is None:
+            return
+        version = self._conn.get_extra_info("client_version")
+        if version:
+            self._client_version_reported = True
+            self.session.on_client_version(str(version))
+
     def begin_auth(self, username: str) -> bool:
-        return True  # always require a password step -- never allow no-auth
+        self._report_client_version()
+        self._auth_username = username
+        return True  # always require a credential step -- never allow no-auth
 
     def password_auth_supported(self) -> bool:
         return True
 
+    def public_key_auth_supported(self) -> bool:
+        # Dropbear offers publickey and password, so a device advertising only
+        # "password" was itself slightly off. Every key is refused; the point
+        # is to record which keys scanners and botnets try.
+        return True
+
+    def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
+        self._credential_tried = True
+        if self.session is not None and self._logged_keys < _MAX_LOGGED_KEYS:
+            self._logged_keys += 1
+            self.session.on_auth_attempt(
+                "publickey", username,
+                key_type=key.get_algorithm(), key_fingerprint=key.get_fingerprint())
+        return False
+
     def validate_password(self, username: str, password: str) -> bool:
         assert self.session is not None
+        self._credential_tried = True
         return self.session.try_login(username, password)
 
 

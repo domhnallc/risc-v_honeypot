@@ -37,6 +37,8 @@ class FetchResult:
     detected_type: str | None = None
     detected_bitness: int | None = None
     detected_machine: str | None = None
+    # "little" / "big" from the ELF header; tells MIPS from MIPSEL, and so on.
+    detected_endianness: str | None = None
     arch_mismatch: bool | None = None
     quarantine_path: str | None = None
     error: str | None = None
@@ -156,6 +158,7 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         detected_type=detected.file_type,
         detected_bitness=detected.bitness,
         detected_machine=detected.machine,
+        detected_endianness=detected.endianness,
         arch_mismatch=arch_mismatch,
         quarantine_path=str(final_path),
         http_status=http_status,
@@ -175,6 +178,7 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
             "detected_type": result.detected_type,
             "detected_bitness": result.detected_bitness,
             "detected_machine": result.detected_machine,
+            "detected_endianness": result.detected_endianness,
             "arch_mismatch": arch_mismatch,
             "http_status": http_status,
             "depth": job.depth,

@@ -11,13 +11,36 @@ import struct
 from dataclasses import dataclass
 
 EM_RISCV = 243
+# e_machine values seen in IoT/embedded malware and Linux userland generally
+# (a captured dropper served m68k, MIPS, PowerPC, SuperH, SPARC and x86-64
+# builds side by side). Anything not listed is reported as EM_UNKNOWN(n)
+# rather than guessed at.
 _EM_NAMES = {
-    EM_RISCV: "EM_RISCV",
+    2: "EM_SPARC",
     3: "EM_386",
-    62: "EM_X86_64",
-    40: "EM_ARM",
-    183: "EM_AARCH64",
+    4: "EM_68K",
     8: "EM_MIPS",
+    10: "EM_MIPS_RS3_LE",
+    15: "EM_PARISC",
+    18: "EM_SPARC32PLUS",
+    20: "EM_PPC",
+    21: "EM_PPC64",
+    22: "EM_S390",
+    40: "EM_ARM",
+    42: "EM_SH",
+    43: "EM_SPARCV9",
+    50: "EM_IA_64",
+    62: "EM_X86_64",
+    92: "EM_OPENRISC",
+    93: "EM_ARC_COMPACT",
+    94: "EM_XTENSA",
+    113: "EM_NIOS2",
+    183: "EM_AARCH64",
+    189: "EM_MICROBLAZE",
+    195: "EM_ARC_COMPACT2",
+    EM_RISCV: "EM_RISCV",
+    252: "EM_CSKY",
+    258: "EM_LOONGARCH",
 }
 
 _MAGIC_SIGNATURES: list[tuple[bytes, str]] = [

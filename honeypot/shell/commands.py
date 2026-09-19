@@ -265,14 +265,33 @@ def _parse_download_args(cmd: str, args: list[str]) -> DownloadRequest | None:
             explicit_out = tok[2:]
 
     if cmd == "tftp":
-        host = next((a for a in args if not a.startswith("-") and "://" not in a), None)
-        remote_file = None
-        for i, a in enumerate(args):
-            if a == "-r" and i + 1 < len(args):
-                remote_file = args[i + 1]
+        # BusyBox: `tftp [-g|-p] [-l LOCAL] [-r REMOTE] [-b SIZE] HOST [PORT]`;
+        # tftp-hpa/atftp style: `tftp HOST -c get REMOTE`. Option *values*
+        # must be skipped when looking for HOST -- `tftp -r x.sh -g HOST` is
+        # the classic Mirai form, and taking the first non-dash word logged
+        # "x.sh" as the C2 host.
+        host = None
+        local_file = remote_file = None
+        it = iter(args)
+        for a in it:
+            if a in ("-l", "-r", "-b"):
+                value = next(it, None)
+                if a == "-l":
+                    local_file = value
+                elif a == "-r":
+                    remote_file = value
+            elif a == "-c":
+                command = next(it, None)
+                file_arg = next(it, None)
+                if command in ("get", "put"):
+                    remote_file = file_arg
+            elif a.startswith("-"):
+                continue
+            elif host is None:
+                host = a
         if host is None:
             return None
-        filename = explicit_out or remote_file or "tftp-payload"
+        filename = explicit_out or local_file or remote_file or "tftp-payload"
         return DownloadRequest(protocol="tftp", url=host, requested_filename=filename)
 
     if url is None:

@@ -1,0 +1,28 @@
+# Per-deployment settings that must not live in the tracked docker-compose.yml.
+#
+# Docker Compose automatically loads a file named docker-compose.override.yml from
+# this directory on top of docker-compose.yml. That file is gitignored, so editing
+# it never blocks a `git pull`. Editing the published ports in docker-compose.yml
+# itself did: every pull that touched that file aborted until you stashed your edit.
+#
+# Setup, once, on the host that runs the honeypot:
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose config | grep -B1 -A3 published     # check the ports you expect
+#
+# Before publishing 22/23, nothing else may be listening there. Move your own admin
+# SSH to another port (and open it in your firewall) FIRST, or you will lock
+# yourself out. If the ports are taken, `docker compose up -d` fails loudly with
+# "address already in use" and nothing is published.
+#
+# `!override` REPLACES the base file's list. Without it Compose APPENDS, and the
+# honeypot would be published on 22 AND 2222 (and 23 AND 2223). It needs Docker
+# Compose >= 2.24.4: check with `docker compose version`.
+#
+# The container-side ports (2222, 2223) are what configs/*-docker.yaml listen on;
+# only change the host side, on the left.
+services:
+  honeypot:
+    ports: !override
+      - "22:2222"
+      - "23:2223"

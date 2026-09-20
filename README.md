@@ -216,13 +216,51 @@ docker compose logs -f              # both services' stdout/stderr
 
 This uses `configs/riscv64-docker.yaml` (edit `docker-compose.yml`'s two
 `command:` lines to switch to `riscv32-docker.yaml`). Privileged ports work
-directly through Docker's `ports:` mapping (e.g. change `"2222:2222"` to
-`"22:2222"`) -- no `setcap` needed in this deployment path. See the comments
+directly through Docker's `ports:` mapping -- no `setcap` needed in this
+deployment path. Set them in a gitignored `docker-compose.override.yml`, not
+in `docker-compose.yml` (see "Deployment-specific ports" below). See the comments
 at the top of `docker-compose.yml` for the full rationale, and harden the
 `egress` network's actual internet access at your host firewall per point 2
 above -- Docker's network separation here stops the fetcher from reaching
 the honeypot container, but a host firewall is still the right place to
 constrain what the fetcher's egress network can reach on your real network.
+
+### Deployment-specific ports
+
+The tracked `docker-compose.yml` publishes the unprivileged defaults, `2222` and
+`2223`. To publish on the standard `22`/`23` (or any other host port), don't edit
+that file -- every `git pull` that touched it then aborted until you stashed your
+edit. Copy the template instead:
+
+```
+cp docker-compose.override.yml.example docker-compose.override.yml
+docker compose config | grep -B1 -A3 published     # confirm the ports you expect
+```
+
+Docker Compose loads `docker-compose.override.yml` automatically on top of
+`docker-compose.yml`; it is gitignored, so pulls never conflict with it. The
+template uses `ports: !override`, which needs Docker Compose >= 2.24.4
+(`docker compose version`): a plain `ports:` list in an override is *appended*
+to the base's, which would publish both 22 and 2222. Only the host (left) side
+should ever change; the container side is what the configs listen on.
+
+Move your own admin SSH off port 22 and open its new port in your firewall
+*before* the honeypot takes 22, or you will lock yourself out.
+
+**Migrating a deployment where you edited `docker-compose.yml`.** Do these in
+order: creating the override first means the published ports never change, so
+the honeypot keeps receiving traffic throughout.
+
+```
+cp docker-compose.override.yml.example docker-compose.override.yml   # edit if you use other ports
+docker compose config | grep -B1 -A3 published     # 1. must show your ports (22/23)
+git checkout -- docker-compose.yml                 # 2. drop your local edit; the override carries it now
+docker compose config | grep -B1 -A3 published     # 3. must show exactly the same ports
+git pull && docker compose build && docker compose up -d
+```
+
+If step 3 shows `2222`/`2223`, stop and do not run `up -d`: the override is not
+being loaded (wrong directory or file name).
 
 ### SSH host key
 
@@ -307,12 +345,11 @@ Droplets and a repo clone at `~/risc-v_honeypot` on each host.
    sudo chown -R 10001:10001 var
    sudo chmod 700 var/keys
    ```
-5. **If you moved SSH to 2200**, edit `docker-compose.yml`'s `honeypot`
-   service to publish the real ports:
-   ```yaml
-       ports:
-         - "22:2222"
-         - "23:2223"
+5. **If you moved SSH to 2200**, publish the honeypot on the real ports with
+   a `docker-compose.override.yml` (details under "Deployment-specific ports"):
+   ```
+   cp docker-compose.override.yml.example docker-compose.override.yml
+   docker compose config | grep -B1 -A3 published     # expect 22 and 23
    ```
 6. **Configure the DigitalOcean Cloud Firewall** (Networking -> Firewalls in
    the control panel, or `doctl compute firewall create`) and attach it to

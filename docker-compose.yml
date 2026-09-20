@@ -40,9 +40,13 @@ services:
     build: .
     command: ["honeypot.main", "configs/riscv64-docker.yaml"]
     restart: unless-stopped
+    # These host ports are the unprivileged defaults. For the standard 22/23, do NOT
+    # edit them here: copy docker-compose.override.yml.example to
+    # docker-compose.override.yml (gitignored, loaded automatically), so a
+    # `git pull` never conflicts with your deployment's ports.
     ports:
-      - "2222:2222"   # change the left side to "22:2222" for the standard port
-      - "2223:2223"   # change the left side to "23:2223" for the standard port
+      - "2222:2222"
+      - "2223:2223"
     volumes:
       - ./configs:/app/configs:ro
       - ./var/jobs:/app/var/jobs

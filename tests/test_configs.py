@@ -59,3 +59,46 @@ def test_host_key_directory_is_gitignored():
     """Private keys must never be committable."""
     ignore = (CONFIGS_DIR.parent / ".gitignore").read_text().splitlines()
     assert "var/keys/" in ignore
+
+
+# -- deployment-specific ports live in a gitignored override, not in docker-compose.yml ------
+
+class _ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that understands Compose's `!override` tag, marking the value
+    so a test can tell a REPLACING list from a plain (appended) one."""
+
+
+_ComposeLoader.add_constructor(
+    "!override", lambda loader, node: {"__override__": loader.construct_sequence(node)})
+
+
+def _load_compose(path: Path) -> dict:
+    return yaml.load(path.read_text(), Loader=_ComposeLoader)
+
+
+def test_override_template_replaces_rather_than_appends_the_honeypot_ports():
+    """Without `!override`, Compose appends an override's list to the base's and the
+    honeypot ends up published on 22 AND 2222 -- checked with `docker compose config`."""
+    template = _load_compose(CONFIGS_DIR.parent / "docker-compose.override.yml.example")
+    assert list(template["services"]) == ["honeypot"] and list(template["services"]["honeypot"]) == ["ports"], \
+        "the override may only touch the honeypot's ports; anything else belongs in docker-compose.yml"
+    ports = template["services"]["honeypot"]["ports"]
+    assert isinstance(ports, dict) and "__override__" in ports, "ports must be tagged !override"
+
+    listeners = load_config(CONFIGS_DIR / "riscv64-docker.yaml").listeners
+    container_ports = sorted(int(p.split(":")[-1]) for p in ports["__override__"])
+    assert container_ports == sorted([listeners.ssh_port, listeners.telnet_port])
+
+
+def test_base_compose_keeps_unprivileged_default_ports():
+    """Deployment choices (22/23) belong in the gitignored override; committing them to the
+    base file is what made every `git pull` on the droplet abort."""
+    base = yaml.safe_load((CONFIGS_DIR.parent / "docker-compose.yml").read_text())
+    host_ports = [p.split(":")[0] for p in base["services"]["honeypot"]["ports"]]
+    assert host_ports == ["2222", "2223"]
+
+
+def test_the_real_override_file_is_gitignored():
+    ignore = (CONFIGS_DIR.parent / ".gitignore").read_text().splitlines()
+    assert "docker-compose.override.yml" in ignore
+    assert "docker-compose.override.yml.example" not in ignore      # the template itself is tracked

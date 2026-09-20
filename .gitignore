@@ -17,6 +17,8 @@ var/jobs/*
 var/ssh_host_key
 # host keys mounted into the docker deployment: private keys, never commit
 var/keys/
+# per-deployment compose settings (ports); template: docker-compose.override.yml.example
+docker-compose.override.yml
 
 # same, for the separate var/training/ tree used by configs/training.yaml
 var/training/logs/*

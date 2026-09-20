@@ -15,7 +15,7 @@ COPY configs ./configs
 
 RUN pip install --no-cache-dir .
 
-RUN mkdir -p var/jobs var/quarantine var/logs var/transcripts \
+RUN mkdir -p var/jobs var/quarantine var/logs var/transcripts var/keys \
     && chown -R honeypot:honeypot /app
 
 USER honeypot

@@ -9,8 +9,17 @@
 # non-root UID (10001), so the bind-mounted host directories must be owned
 # by that UID first:
 #
-#   mkdir -p var/jobs var/quarantine var/logs var/transcripts
+#   mkdir -p var/jobs var/quarantine var/logs var/transcripts var/keys
 #   sudo chown -R 10001:10001 var
+#   sudo chmod 700 var/keys
+#
+# var/keys holds the SSH host key so the honeypot's fingerprint survives
+# rebuilds (a device whose host key changes between visits is a tell). If the
+# directory is missing or not writable by UID 10001 the honeypot still starts,
+# on a temporary key, and logs an error saying so -- check `docker compose logs
+# honeypot` after deploying. To keep the key of an already-running deployment:
+#   docker compose cp honeypot:/app/var/ssh_host_key var/keys/ssh_host_key
+#   sudo chown -R 10001:10001 var/keys && sudo chmod 600 var/keys/ssh_host_key
 #
 # Publishing privileged ports (22/23) works directly through Docker's port
 # mapping below -- no setcap needed when deploying this way (unlike the
@@ -39,6 +48,7 @@ services:
       - ./var/jobs:/app/var/jobs
       - ./var/logs:/app/var/logs
       - ./var/transcripts:/app/var/transcripts
+      - ./var/keys:/app/var/keys
     networks:
       - public
     # Deliberately no mount of var/quarantine: this service never needs to

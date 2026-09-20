@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from honeypot.config import load_config
 
 CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
@@ -38,3 +40,22 @@ def test_docker_configs_use_queued_mode():
     for name in ("riscv64-docker.yaml", "riscv32-docker.yaml"):
         config = load_config(CONFIGS_DIR / name)
         assert config.fetcher.mode == "queued"
+
+
+def test_docker_configs_keep_the_ssh_host_key_on_a_mounted_volume():
+    """A host key inside the container is regenerated on every rebuild, so an
+    attacker sees the "device" change fingerprint. The key path in each docker
+    config must sit under a directory docker-compose.yml bind-mounts from the
+    host into the honeypot service -- this fails if either side is edited alone."""
+    compose = yaml.safe_load((CONFIGS_DIR.parent / "docker-compose.yml").read_text())
+    mounted = {v.split(":")[1].rstrip("/") for v in compose["services"]["honeypot"]["volumes"]}
+    for path in sorted(CONFIGS_DIR.glob("*-docker.yaml")):
+        key_path = load_config(path).listeners.ssh_host_key_path
+        container_dir = "/app/" + str(key_path.parent)
+        assert container_dir in mounted, f"{path.name}: {key_path} is not under a mounted volume {sorted(mounted)}"
+
+
+def test_host_key_directory_is_gitignored():
+    """Private keys must never be committable."""
+    ignore = (CONFIGS_DIR.parent / ".gitignore").read_text().splitlines()
+    assert "var/keys/" in ignore

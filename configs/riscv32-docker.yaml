@@ -21,6 +21,9 @@ listeners:
   ssh_port: 2222
   telnet_enabled: true
   telnet_port: 2223
+  # Under a directory docker-compose.yml bind-mounts from the host, so the host
+  # key (and therefore the SSH fingerprint attackers see) survives rebuilds.
+  ssh_host_key_path: var/keys/ssh_host_key
 
 credentials:
   # accept_any=true (literally any credential succeeds) is itself a

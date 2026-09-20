@@ -279,3 +279,70 @@ def test_client_with_a_key_and_a_password_still_logs_in_with_the_password(tmp_pa
     events = _run_ssh_scenario(tmp_path, scenario)
     assert [e["method"] for e in events if e["event"] == "auth.attempt"] == ["publickey"]
     assert len([e for e in events if e["event"] == "login.success"]) == 1
+
+
+# -- host key persistence --------------------------------------------------------
+
+def _fingerprint(key) -> str:
+    return key.convert_to_public().get_fingerprint()
+
+
+def test_host_key_is_created_private_and_reused(tmp_path):
+    from honeypot.listeners.ssh import _load_or_create_host_key
+    path = tmp_path / "keys" / "ssh_host_key"
+
+    first = _load_or_create_host_key(path)
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert [p.name for p in path.parent.iterdir()] == ["ssh_host_key"]   # no temp file left behind
+
+    second = _load_or_create_host_key(path)
+    assert _fingerprint(second) == _fingerprint(first)
+
+
+def test_unwritable_key_location_falls_back_to_a_temporary_key_and_says_so(tmp_path, caplog):
+    """A missing/unwritable mount must not stop the honeypot starting."""
+    import logging
+    from honeypot.listeners.ssh import _load_or_create_host_key
+    blocker = tmp_path / "keys"
+    blocker.write_text("a file where the key directory should be")
+
+    with caplog.at_level(logging.ERROR):
+        key = _load_or_create_host_key(blocker / "ssh_host_key")
+
+    assert key is not None
+    assert "SSH host key" in caplog.text and "TEMPORARY" in caplog.text
+
+
+def test_corrupt_key_file_is_never_overwritten(tmp_path, caplog):
+    import logging
+    from honeypot.listeners.ssh import _load_or_create_host_key
+    path = tmp_path / "ssh_host_key"
+    path.write_bytes(b"this is not a private key")
+
+    with caplog.at_level(logging.ERROR):
+        assert _load_or_create_host_key(path) is not None
+    assert path.read_bytes() == b"this is not a private key"
+    assert "unusable" in caplog.text
+
+
+def test_listener_still_serves_when_the_key_location_is_unusable(tmp_path):
+    blocker = tmp_path / "keys"
+    blocker.write_text("not a directory")
+
+    async def run() -> bytes:
+        config = HoneypotConfig(
+            persona=PersonaConfig(arch="riscv64"),
+            listeners={"bind_host": "127.0.0.1", "ssh_port": 0, "telnet_enabled": False},
+            logging={"log_dir": str(tmp_path / "logs"), "transcript_dir": str(tmp_path / "transcripts")},
+        )
+        logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
+        server = await start_ssh_listener(config, logger, host_key_path=blocker / "ssh_host_key")
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.get_addresses()[0][1])
+            try:
+                return await reader.readline()
+            finally:
+                writer.close()
+        finally:
+            server.close()
+    assert asyncio.run(run()).startswith(b"SSH-2.0-")

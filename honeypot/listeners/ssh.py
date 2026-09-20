@@ -6,6 +6,8 @@ so command parsing/logging isn't duplicated per protocol.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from pathlib import Path
 
 import asyncssh
@@ -14,6 +16,8 @@ from honeypot.config.schema import HoneypotConfig
 from honeypot.listeners.limiter import ConnectionLimiter
 from honeypot.logging.events import EventLogger
 from honeypot.session.manager import MAX_INPUT_CHARS, SessionManager
+
+log = logging.getLogger(__name__)
 
 
 # asyncssh puts no limit on how many public keys a client may offer, and each
@@ -176,19 +180,56 @@ def _process_factory(config: HoneypotConfig):
     return factory
 
 
-async def _ensure_host_key(host_key_path: Path) -> None:
-    if host_key_path.exists():
-        return
-    host_key_path.parent.mkdir(parents=True, exist_ok=True)
-    key = asyncssh.generate_private_key("ssh-rsa")
-    host_key_path.write_bytes(key.export_private_key())
-    host_key_path.chmod(0o600)
+def _load_or_create_host_key(host_key_path: Path) -> asyncssh.SSHKey:
+    """The persistent SSH host key, created on first use.
+
+    A device whose host key changes between visits is a tell, and the key used
+    to be regenerated on every container rebuild because it lived inside the
+    container. Deployments now mount its directory from the host (see
+    docker-compose.yml), and this keeps it there.
+
+    The honeypot being reachable matters more than the key persisting, so an
+    unusable path -- a mount that doesn't exist or isn't writable by the
+    container's UID, a key file that can't be read or parsed -- falls back to a
+    temporary in-memory key with a loud error, rather than raising out of
+    start_ssh_listener and crash-looping the container. An unreadable or corrupt
+    existing file is never overwritten.
+    """
+    try:
+        try:
+            return asyncssh.read_private_key(host_key_path)
+        except FileNotFoundError:
+            pass
+        key = asyncssh.generate_private_key("ssh-rsa")
+        host_key_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a private temp name in the same directory and rename into
+        # place: the key is 0600 from its first byte (write_bytes + chmod left
+        # a window where it was world-readable) and a crash mid-write cannot
+        # leave a truncated key behind for the next start to trip over.
+        tmp = host_key_path.with_name(f".{host_key_path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(key.export_private_key())
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, host_key_path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        return key
+    except (OSError, asyncssh.KeyImportError, asyncssh.KeyEncryptionError) as exc:
+        log.error(
+            "SSH host key %s is unusable (%s: %s); using a TEMPORARY in-memory key, so the "
+            "host fingerprint will change on every restart. Fix the directory's ownership/"
+            "permissions (the container runs as UID 10001) or the key file.",
+            host_key_path, type(exc).__name__, exc)
+        return asyncssh.generate_private_key("ssh-rsa")
 
 
 async def start_ssh_listener(config: HoneypotConfig, event_logger: EventLogger,
                               host_key_path: str | Path = "var/ssh_host_key") -> asyncssh.SSHAcceptor:
-    host_key_path = Path(host_key_path)
-    await _ensure_host_key(host_key_path)
+    host_key = _load_or_create_host_key(Path(host_key_path))
     limiter = ConnectionLimiter(config.listeners.max_connections_per_ip)
 
     def server_factory() -> _HoneypotSSHServer:
@@ -198,7 +239,7 @@ async def start_ssh_listener(config: HoneypotConfig, event_logger: EventLogger,
         server_factory,
         host=config.listeners.bind_host,
         port=config.listeners.ssh_port,
-        server_host_keys=[str(host_key_path)],
+        server_host_keys=[host_key],
         process_factory=_process_factory(config),
         # asyncssh prepends "SSH-2.0-" itself (see _send_version in
         # asyncssh/connection.py) -- this must be *just* the software

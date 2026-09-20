@@ -207,8 +207,9 @@ live-tested: a real login → `wget` → quarantine round trip through the
 container to the `fetcher` container's IP confirmed to time out.
 
 ```
-mkdir -p var/jobs var/quarantine var/logs var/transcripts
+mkdir -p var/jobs var/quarantine var/logs var/transcripts var/keys
 sudo chown -R 10001:10001 var       # both containers run as fixed UID 10001
+sudo chmod 700 var/keys             # holds the SSH host key -- see "SSH host key" below
 docker compose up -d
 docker compose logs -f              # both services' stdout/stderr
 ```
@@ -222,6 +223,31 @@ at the top of `docker-compose.yml` for the full rationale, and harden the
 above -- Docker's network separation here stops the fetcher from reaching
 the honeypot container, but a host firewall is still the right place to
 constrain what the fetcher's egress network can reach on your real network.
+
+### SSH host key
+
+The honeypot's SSH host key is generated once and reused, so the fingerprint an
+attacker sees stays the same across restarts and rebuilds -- a device whose key
+changes between visits is a tell. In the Docker deployment it lives in
+`var/keys/`, which `docker-compose.yml` bind-mounts from the host (the
+`docker-compose.yml` header has the one-time `mkdir`/`chown`/`chmod`). Bare-metal
+runs keep it at `var/ssh_host_key`.
+
+If the key directory is missing or not writable by UID 10001, the honeypot
+still starts -- an unreachable honeypot is worse than a changing fingerprint --
+on a **temporary in-memory key**, and logs `SSH host key ... is unusable` at
+`ERROR`. After deploying, check `docker compose logs honeypot | grep -i "host key"`.
+An existing key file that can't be read or parsed is left untouched, never
+overwritten.
+
+To keep the key of a deployment that predates this (it was generated inside the
+container and would otherwise be lost on the next rebuild), copy it out first:
+
+```
+mkdir -p var/keys
+docker compose cp honeypot:/app/var/ssh_host_key var/keys/ssh_host_key
+sudo chown -R 10001:10001 var/keys && sudo chmod 700 var/keys && sudo chmod 600 var/keys/ssh_host_key
+```
 
 ## Firewall and ports
 
@@ -265,8 +291,9 @@ Droplets and a repo clone at `~/risc-v_honeypot` on each host.
    this directory) to `~/risc-v_honeypot`, then:
    ```
    cd ~/risc-v_honeypot
-   mkdir -p var/jobs var/quarantine var/logs var/transcripts
+   mkdir -p var/jobs var/quarantine var/logs var/transcripts var/keys
    sudo chown -R 10001:10001 var
+   sudo chmod 700 var/keys
    ```
 5. **If you moved SSH to 2200**, edit `docker-compose.yml`'s `honeypot`
    service to publish the real ports:
@@ -319,7 +346,7 @@ NFS export, opened only between their private VPC IPs.
    region, same VPC, each gets a private IP automatically (e.g.
    `10.116.0.2`/`10.116.0.3`). Repeat steps 1-4 from Option A on **both**
    Droplets (Docker install, repo clone to `~/risc-v_honeypot`, `mkdir -p
-   var/... && chown -R 10001:10001 var`). Only `honeypot-session` needs the
+   var/... var/keys && chown -R 10001:10001 var`). Only `honeypot-session` needs the
    SSH-port-move from Option A step 2 (it's the only one with a public bait
    surface).
 2. **Share `var/jobs` between them over the private network.**

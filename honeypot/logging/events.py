@@ -53,6 +53,13 @@ class EventLogger:
                   src_port=src_port, dst_port=dst_port, protocol=protocol,
                   client_id=client_id)
 
+    def heartbeat(self, uptime_seconds: float) -> None:
+        """Liveness marker, written every logging.heartbeat_seconds and once at
+        startup (uptime ~0, so a restart shows up as an uptime reset). Without
+        it "nobody connected for hours" and "the honeypot is down" look
+        identical in the log."""
+        self.log("honeypot.heartbeat", uptime_seconds=round(uptime_seconds, 1))
+
     def client_version(self, session_id: str, client_id: str) -> None:
         """The SSH client's version string. It only exists once the version
         exchange has happened, i.e. *after* session.connect was written, so it

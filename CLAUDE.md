@@ -129,6 +129,14 @@ Telnet Listener (asyncio)┘         │
   wget's `User-Agent: Wget` -- `fetcher.user_agent` -- and no automatic `Accept*` headers);
   `worker.py` is the `python -m honeypot.fetcher.worker <config>` standalone entry point
   for running the fetcher as a physically separate process.
+- **SSH host key**: persisted, not regenerated per rebuild. The docker configs put it at
+  `var/keys/ssh_host_key`, a directory `docker-compose.yml` bind-mounts (a test fails if the two
+  drift apart). `_load_or_create_host_key` (`honeypot/listeners/ssh.py`) writes it 0600 via
+  temp-file + rename and, if the location is unusable, falls back to a temporary in-memory key
+  with an ERROR log rather than crashing the container.
+- **Tools and rotation**: `tools/dashboard.py`'s `_load_events` (shared by `status_check.py` and
+  `dashboard_server.py`) also reads logrotate's `events.jsonl.N[.gz]` siblings, oldest first;
+  `--no-rotated` opts out. `status_check.py` prints a `Newest event` line and warns on silence.
 - **`honeypot/config/schema.py`** defines the pydantic models (`PersonaConfig`,
   `ListenerConfig`, `CredentialPolicy`, `FetcherConfig`, `LoggingConfig`,
   `HoneypotConfig`) and `load_config()`. Both `configs/riscv64.yaml` and
@@ -139,7 +147,8 @@ Telnet Listener (asyncio)┘         │
   `command.input`, `file.download`, `file.execution_attempt`, plus
   `session.client_version` (SSH banner, logged once the version exchange has happened),
   `auth.attempt` (offered public keys with fingerprints, and "none" probes that never tried a
-  credential) and `file.stage2_scan`) and `TranscriptWriter` (one
+  credential), `file.stage2_scan` and `honeypot.heartbeat` -- written at startup and every
+  `logging.heartbeat_seconds`, so a silent log can be told from a stopped honeypot) and `TranscriptWriter` (one
   JSONL file per session under `var/transcripts/`, base64-encoded raw send/recv bytes).
 
 **Why `honeypot/logging/` and not a top-level `logging/`**: the spec's directory sketch

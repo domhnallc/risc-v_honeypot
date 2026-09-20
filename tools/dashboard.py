@@ -16,6 +16,10 @@ Usage:
     python3 tools/dashboard.py configs/riscv64.yaml --geoip var/GeoLite2-City.mmdb
     python3 tools/dashboard.py --events var/logs/events.jsonl --out var/dashboard.html
 
+Rotated logs (events.jsonl.1, events.jsonl.2.gz, ...) next to the one you name
+are read too, oldest first, so the report spans every day still on disk; pass
+--no-rotated to look at the named file alone.
+
 GeoLite2-City.mmdb is NOT bundled -- MaxMind's license requires a free
 signup before you can download it yourself:
     https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
@@ -30,9 +34,11 @@ you're going to load it in a real browser.
 from __future__ import annotations
 
 import argparse
+import gzip
 import html
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -48,20 +54,72 @@ except ImportError:
 
 # -- log loading -------------------------------------------------------
 
-def _load_events(events_path: Path) -> list[dict[str, Any]]:
+# logrotate (deploy/logrotate-riscv-honeypot.conf) renames events.jsonl to
+# events.jsonl.1 at midnight UTC, then .2.gz, .3.gz ... as it ages. Reading only
+# events.jsonl therefore shows just "today so far" -- a fresh rotation looks
+# exactly like the honeypot having gone quiet -- so by default every numbered
+# sibling is read too, oldest first.
+_ROTATED_SUFFIX = re.compile(r"^\.(\d+)(\.gz)?$")
+
+# Rotated files never change once written, but the live dashboard re-reads the
+# log on every refresh: gunzipping and re-parsing a month of history every 15
+# seconds would be wasteful. Keyed on (path, mtime, size), so a file that is
+# replaced or grows is parsed again.
+_ROTATED_CACHE: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+
+
+def rotated_siblings(events_path: Path) -> list[Path]:
+    """logrotate's numbered copies of `events_path`, oldest first (.10.gz before .2.gz before .1)."""
+    found: list[tuple[int, Path]] = []
+    for path in events_path.parent.glob(events_path.name + ".*"):
+        match = _ROTATED_SUFFIX.match(path.name[len(events_path.name):])
+        if match:
+            found.append((int(match.group(1)), path))
+    return [path for _, path in sorted(found, reverse=True)]
+
+
+def _parse_file(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    if not events_path.exists():
+    try:
+        opened = (gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz"
+                  else path.open(encoding="utf-8"))
+        with opened as fh:
+            for line_no, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    print(f"warning: {path}:{line_no}: skipping malformed JSON line", file=sys.stderr)
+    except (OSError, EOFError) as exc:  # unreadable, or a gzip cut short by a full disk
+        print(f"warning: {path}: {type(exc).__name__}: {exc}; keeping the {len(events)} events read before it",
+              file=sys.stderr)
+    return events
+
+
+def _parse_rotated(path: Path) -> list[dict[str, Any]]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _ROTATED_CACHE:
+        for stale in [k for k in _ROTATED_CACHE if k[0] == key[0]]:
+            del _ROTATED_CACHE[stale]
+        _ROTATED_CACHE[key] = _parse_file(path)
+    return _ROTATED_CACHE[key]
+
+
+def _load_events(events_path: Path, include_rotated: bool = True) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if include_rotated:
+        for rotated in rotated_siblings(events_path):
+            events.extend(_parse_rotated(rotated))
+    if events_path.exists():
+        events.extend(_parse_file(events_path))
+    elif not events:
         print(f"warning: {events_path} does not exist, report will be empty", file=sys.stderr)
-        return events
-    with events_path.open(encoding="utf-8") as fh:
-        for line_no, line in enumerate(fh, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError:
-                print(f"warning: {events_path}:{line_no}: skipping malformed JSON line", file=sys.stderr)
     return events
 
 
@@ -484,6 +542,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", nargs="?", help="honeypot config YAML, used to find the events log by default")
     parser.add_argument("--events", help="explicit path to events.jsonl (overrides --config-derived path)")
+    parser.add_argument("--no-rotated", action="store_true",
+                         help="read only the named log, not its rotated events.jsonl.N[.gz] siblings")
     parser.add_argument("--geoip", help="path to a GeoLite2-City.mmdb file (optional)")
     parser.add_argument("--out", default="var/dashboard.html", help="output HTML path (default: var/dashboard.html)")
     args = parser.parse_args()
@@ -498,7 +558,7 @@ def main() -> None:
         parser.error("pass either a config YAML or --events path/to/events.jsonl")
         return
 
-    events = _load_events(events_path)
+    events = _load_events(events_path, include_rotated=not args.no_rotated)
     report = Report(events)
     geo = GeoLookup(Path(args.geoip) if args.geoip else None)
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 
 from honeypot.config import load_config
 from honeypot.listeners.ssh import start_ssh_listener
@@ -22,6 +23,23 @@ from honeypot.listeners.telnet import start_telnet_listener
 from honeypot.logging.events import EventLogger
 
 log = logging.getLogger(__name__)
+
+
+async def _heartbeat(event_logger: EventLogger, interval: float) -> None:
+    """Log a liveness event now and then every `interval` seconds, forever.
+
+    The first one is written immediately, so every (re)start leaves a marker
+    with uptime ~0. A failed write (full disk, bad permissions) is logged and
+    retried next tick: this runs inside the TaskGroup that also serves the
+    listeners, so letting it raise would take the honeypot down with it.
+    """
+    started = time.monotonic()
+    while True:
+        try:
+            event_logger.heartbeat(time.monotonic() - started)
+        except OSError:
+            log.exception("could not write heartbeat event")
+        await asyncio.sleep(interval)
 
 
 async def run(config_path: str) -> None:
@@ -45,6 +63,8 @@ async def run(config_path: str) -> None:
         return
 
     async with asyncio.TaskGroup() as tg:
+        if config.logging.heartbeat_seconds > 0:
+            tg.create_task(_heartbeat(event_logger, config.logging.heartbeat_seconds))
         for server in servers:
             tg.create_task(server.serve_forever() if hasattr(server, "serve_forever") else server.wait_closed())
 

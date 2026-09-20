@@ -18,17 +18,28 @@ Usage:
 testing) -- by session, not by event, since most event types
 (command.input, file.download, session.closed) don't carry src_ip
 directly; filtering on literal event fields alone silently keeps them.
+
+Rotated logs (events.jsonl.1, events.jsonl.2.gz, ...) next to the one you name
+are read too (--no-rotated to skip them): logrotate splits the log at midnight
+UTC, and reading only events.jsonl would show just "today so far" -- a fresh
+rotation looks exactly like the honeypot going quiet.
+
+The "Newest event" line is measured against the unfiltered log, so --exclude-ip
+can't hide that nothing has been logged recently; it warns after --stale-minutes
+of silence (the honeypot logs a honeypot.heartbeat every few minutes, so
+silence means it stopped, not that nobody knocked).
 """
 from __future__ import annotations
 
 import argparse
 import sys
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
-from dashboard import Report, _load_events  # noqa: E402
+from dashboard import Report, _load_events, rotated_siblings  # noqa: E402
 
 
 def _filter_excluded_ips(events: list[dict[str, Any]], exclude_ips: set[str]) -> list[dict[str, Any]]:
@@ -69,6 +80,38 @@ def _download_line(d: dict) -> str:
     return f"  {d.get('timestamp')}  {d.get('outcome', '-'):8s}  {tag}{d.get('url')}{arch}"
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_age(age: timedelta) -> str:
+    minutes = max(0, int(age.total_seconds() // 60))
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m"
+
+
+def _liveness_lines(events: list[dict[str, Any]], now: datetime | None = None,
+                    stale_minutes: float = 30) -> list[str]:
+    """How long since the honeypot last logged anything, and a warning if that is too long."""
+    now = now or datetime.now(timezone.utc)
+    stamped = [(t, e) for e in events if (t := _parse_timestamp(e.get("timestamp"))) is not None]
+    if not stamped:
+        return ["Newest event: (none in this log)"]
+    newest, _ = max(stamped, key=lambda pair: pair[0])
+    age = now - newest
+    lines = [f"Newest event: {newest:%Y-%m-%dT%H:%M:%SZ}  ({_format_age(age)} ago)"]
+    heartbeats = [t for t, e in stamped if e.get("event") == "honeypot.heartbeat"]
+    if heartbeats:
+        lines.append(f"Heartbeat:    last {max(heartbeats):%Y-%m-%dT%H:%M:%SZ}, {len(heartbeats)} in this log")
+    if age > timedelta(minutes=stale_minutes):
+        lines.append(f"WARNING:      nothing logged for {_format_age(age)}. If this is the live log, the honeypot "
+                     "may be down: check `docker compose ps` and `docker compose logs honeypot`.")
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", nargs="?", help="honeypot config YAML, used to find the events log by default")
@@ -76,6 +119,10 @@ def main() -> None:
     parser.add_argument("--exclude-ip", action="append", default=[], metavar="IP",
                          help="source IP to exclude entirely (e.g. your own testing IP); repeatable")
     parser.add_argument("--top", type=int, default=10, help="rows per top-N list (default 10)")
+    parser.add_argument("--no-rotated", action="store_true",
+                         help="read only the named log, not its rotated events.jsonl.N[.gz] siblings")
+    parser.add_argument("--stale-minutes", type=float, default=30,
+                         help="warn if nothing has been logged for this long (default 30)")
     args = parser.parse_args()
 
     if args.events:
@@ -88,7 +135,12 @@ def main() -> None:
         parser.error("pass either a config YAML or --events path/to/events.jsonl")
         return
 
-    events = _filter_excluded_ips(_load_events(events_path), set(args.exclude_ip))
+    include_rotated = not args.no_rotated
+    all_events = _load_events(events_path, include_rotated=include_rotated)
+    if include_rotated and (rotated := rotated_siblings(events_path)):
+        print(f"(also read {len(rotated)} rotated log file(s): {rotated[-1].name} .. {rotated[0].name})",
+              file=sys.stderr)
+    events = _filter_excluded_ips(all_events, set(args.exclude_ip))
     report = Report(events)
 
     total_logins = report.login_success + report.login_failed
@@ -97,6 +149,8 @@ def main() -> None:
     successful_downloads = sum(1 for d in report.downloads if d.get("outcome") == "success")
 
     print(f"Window:       {report.first_seen or '-'}  to  {report.last_seen or '-'}")
+    for line in _liveness_lines(all_events, stale_minutes=args.stale_minutes):
+        print(line)
     print(f"Volume:       {len(report.sessions)} sessions")
     print(f"Unique IPs:   {len(report.unique_ips)}")
     print(f"Protocols:    {dict(protocols)}")

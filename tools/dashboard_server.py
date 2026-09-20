@@ -45,11 +45,12 @@ app = Flask(__name__)
 _events_path: Path
 _geo: GeoLookup
 _refresh_seconds: int = 15
+_include_rotated: bool = True
 
 
 @app.route("/")
 def index() -> Response:
-    events = _load_events(_events_path)
+    events = _load_events(_events_path, include_rotated=_include_rotated)
     report = Report(events)
     html_out = render_html(report, _geo)
     if _refresh_seconds > 0:
@@ -63,6 +64,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("config", nargs="?", help="honeypot config YAML, used to find the events log by default")
     parser.add_argument("--events", help="explicit path to events.jsonl (overrides --config-derived path)")
+    parser.add_argument("--no-rotated", action="store_true",
+                         help="read only the named log, not its rotated events.jsonl.N[.gz] siblings")
     parser.add_argument("--geoip", help="path to a GeoLite2-City.mmdb file (optional)")
     parser.add_argument("--host", default="127.0.0.1",
                          help="address to bind (default: 127.0.0.1 -- loopback only, see SECURITY NOTE above)")
@@ -73,7 +76,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    global _events_path, _geo, _refresh_seconds
+    global _events_path, _geo, _refresh_seconds, _include_rotated
 
     args = _build_arg_parser().parse_args()
 
@@ -89,6 +92,7 @@ def main() -> None:
 
     _geo = GeoLookup(Path(args.geoip) if args.geoip else None)
     _refresh_seconds = args.refresh_seconds
+    _include_rotated = not args.no_rotated
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"[dashboard_server] WARNING: binding {args.host}, not loopback-only -- "

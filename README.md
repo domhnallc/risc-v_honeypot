@@ -502,10 +502,28 @@ To look at what was captured without ever executing it:
 `session.closed`, `login.success`/`login.failed`, `command.input`,
 `file.download` (a `"requested"` event logged immediately, even before the
 fetch completes, plus a follow-up `"success"`/`"failed"` event with the
-outcome), and `file.execution_attempt`. Ship this to a SIEM by tailing the
+outcome), and `file.execution_attempt`. Also logged: `session.client_version`
+(the SSH client's banner), `auth.attempt` (public keys offered, with
+fingerprints, and "none" probes that never tried a credential),
+`file.stage2_scan` (a fetched script was scanned for follow-on URLs), and
+`honeypot.heartbeat`. Ship this to a SIEM by tailing the
 file, or extend `honeypot/logging/events.py` with a forwarding sink -- the
 spec deliberately keeps this pluggable rather than building a forwarder for
 v1.
+
+**Heartbeat and log rotation.** A public honeypot is knocked on every few
+minutes around the clock, so a long gap in the log means the process stopped
+-- but only if the log can say "still here" when nobody connects. The
+honeypot writes `honeypot.heartbeat` (with `uptime_seconds`) at startup, so
+each restart leaves a marker with uptime near 0, and then every
+`logging.heartbeat_seconds` (default 300; `0` disables). Separately,
+logrotate (`deploy/logrotate-riscv-honeypot.conf`) renames `events.jsonl` to
+`events.jsonl.1` at midnight UTC and gzips older days as `events.jsonl.2.gz`,
+`.3.gz`, ... -- so `tail events.jsonl` (or a copy of just that file) shows
+only "today so far", and a fresh rotation looks exactly like the honeypot
+going quiet. `tools/dashboard.py`, `dashboard_server.py` and `status_check.py`
+therefore read the rotated siblings of the file you name too, oldest first
+(`--no-rotated` to look at the named file alone).
 
 ## Dashboard
 
@@ -532,6 +550,12 @@ PEP 668 `externally-managed-environment` protection).
 python3 tools/status_check.py --events var/logs/events.jsonl
 python3 tools/status_check.py --events var/logs/events.jsonl --exclude-ip <your-own-testing-ip>
 ```
+
+Its output starts with a `Newest event` line (how long ago anything was last
+logged, measured against the whole log so `--exclude-ip` can't hide it) and a
+`WARNING` after `--stale-minutes` (default 30) of silence -- if this is the live
+log, the honeypot may be down. Rotated logs next to the one you name are read
+too; it says so on stderr.
 
 Use `--events`, not the `configs/riscv64.yaml` positional-arg form, when
 running this directly on a bare Droplet host: the config form resolves the

@@ -219,6 +219,11 @@ class LoggingConfig(BaseModel):
     json_log_filename: str = "events.jsonl"
     level: str = "INFO"
     forward_url: str | None = None
+    # Seconds between honeypot.heartbeat events in events.jsonl (0 disables).
+    # A public honeypot is knocked on every few minutes around the clock, so a
+    # long silence usually means the process stopped -- the heartbeat makes
+    # that distinguishable from a quiet spell (see tools/status_check.py).
+    heartbeat_seconds: float = 300.0
 
 
 class HoneypotConfig(BaseModel):

@@ -32,6 +32,7 @@ silence means it stopped, not that nobody knocked).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -138,7 +139,7 @@ def main() -> None:
     include_rotated = not args.no_rotated
     all_events = _load_events(events_path, include_rotated=include_rotated)
     if include_rotated and (rotated := rotated_siblings(events_path)):
-        print(f"(also read {len(rotated)} rotated log file(s): {rotated[-1].name} .. {rotated[0].name})",
+        print(f"(also read {len(rotated)} rotated log file(s): {rotated[0].name} .. {rotated[-1].name})",
               file=sys.stderr)
     events = _filter_excluded_ips(all_events, set(args.exclude_ip))
     report = Report(events)
@@ -186,4 +187,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        # `status_check.py | head`: the reader closed the pipe on purpose, which
+        # is not an error. Left alone, Python prints a traceback and then a
+        # second "Exception ignored" when it flushes stdout at shutdown; point
+        # stdout at /dev/null so that final flush is silent too.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)

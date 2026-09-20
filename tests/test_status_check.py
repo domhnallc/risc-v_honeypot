@@ -11,6 +11,8 @@ catch.
 """
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -73,3 +75,24 @@ def test_download_line_shows_bitness_and_endianness():
                            "detected_machine": "EM_MIPS", "detected_bitness": 32,
                            "detected_endianness": "big"})
     assert line.endswith("EM_MIPS 32-bit big")
+
+
+def test_piping_into_head_exits_quietly(tmp_path):
+    """`status_check.py | head -4` used to end in a BrokenPipeError traceback.
+    The output is made larger than a pipe buffer, so the tool is certainly still
+    writing when the reader hangs up."""
+    events = tmp_path / "events.jsonl"
+    events.write_text("".join(
+        json.dumps({"timestamp": "2026-09-20T09:00:00Z", "event": "file.download", "session_id": f"s{i}",
+                    "url": f"http://198.51.100.1/{'x' * 80}{i}", "outcome": "failed"}) + "\n"
+        for i in range(4000)))
+    tool = Path(__file__).resolve().parent.parent / "tools" / "status_check.py"
+
+    proc = subprocess.Popen([sys.executable, str(tool), "--events", str(events)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc.stdout.readline()
+    proc.stdout.close()
+    stderr = proc.stderr.read()
+
+    assert proc.wait(timeout=30) == 0
+    assert b"Traceback" not in stderr and b"BrokenPipe" not in stderr and b"Exception ignored" not in stderr

@@ -574,6 +574,14 @@ going quiet. `tools/dashboard.py`, `dashboard_server.py` and `status_check.py`
 therefore read the rotated siblings of the file you name too, oldest first
 (`--no-rotated` to look at the named file alone).
 
+**Terminal safety.** Usernames, banners and URLs are attacker-controlled, and a
+string carrying an escape sequence can retitle your terminal, overwrite earlier
+output or, with a newline, forge a log line. `events.jsonl` is safe to `tail` (JSON
+escapes control characters), and both `docker compose logs` output and
+`status_check.py` show such characters as visible `\x1b`-style escapes instead of
+acting on them. Still use `cat -v` for anything you extract or decode by hand, and
+replay any raw session bytes in a throwaway terminal.
+
 ## Dashboard
 
 Three ways to view `var/logs/events.jsonl` as a report instead of raw

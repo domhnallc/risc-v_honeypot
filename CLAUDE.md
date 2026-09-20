@@ -146,6 +146,13 @@ Telnet Listener (asyncio)┘         │
   `HoneypotConfig`) and `load_config()`. Both `configs/riscv64.yaml` and
   `configs/riscv32.yaml` validate against this schema — check it first when a config field
   seems to be missing or misnamed.
+- **`honeypot/logging/sanitize.py`**: `SafeFormatter` / `setup_logging`, installed by
+  `honeypot.main` and the fetcher worker in place of `logging.basicConfig`. Every log line --
+  ours and asyncssh's -- shows control/C1/bidi characters as `\xNN`/`\uNNNN` and cannot span
+  lines (asyncssh logs `Beginning auth for user <username>` verbatim, so a username with an
+  escape sequence or newline used to reach `docker compose logs` raw). `events.jsonl` is
+  unaffected (JSON-escaped, and it keeps values as sent). `tools/status_check.py` carries a
+  copy of the escape table because it runs where `honeypot` isn't importable; a test keeps them equal.
 - **`honeypot/logging/events.py`** provides `EventLogger` (one JSON object per line to
   `var/logs/events.jsonl`: `session.connect`/`session.closed`, `login.success`/`failed`,
   `command.input`, `file.download`, `file.execution_attempt`, plus

@@ -21,6 +21,7 @@ from honeypot.config import load_config
 from honeypot.listeners.ssh import start_ssh_listener
 from honeypot.listeners.telnet import start_telnet_listener
 from honeypot.logging.events import EventLogger
+from honeypot.logging.sanitize import setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,7 @@ async def _heartbeat(event_logger: EventLogger, interval: float) -> None:
 
 async def run(config_path: str) -> None:
     config = load_config(config_path)
-    logging.basicConfig(level=config.logging.level, stream=sys.stderr,
-                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging(config.logging.level)
     event_logger = EventLogger(config.logging.log_dir, config.logging.json_log_filename)
 
     servers = []

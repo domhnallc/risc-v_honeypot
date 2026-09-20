@@ -19,6 +19,7 @@ from honeypot.config import load_config
 from honeypot.fetcher.fetcher import fetch_and_quarantine
 from honeypot.fetcher.queue import claim_pending_jobs, enqueue_job
 from honeypot.fetcher.stage2 import Stage2Limiter, plan_followups
+from honeypot.logging.sanitize import setup_logging
 
 POLL_INTERVAL_SECONDS = 2.0
 
@@ -56,6 +57,7 @@ async def process_pending(config, limiter: Stage2Limiter | None = None) -> int:
 
 async def run(config_path: str) -> None:
     config = load_config(config_path)
+    setup_logging(config.logging.level)   # the worker's own log lines get the same control-character escaping
     print(f"[fetcher-worker] watching {config.fetcher.jobs_dir}", file=sys.stderr)
     while True:
         await process_pending(config)

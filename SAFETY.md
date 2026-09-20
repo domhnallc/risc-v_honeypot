@@ -157,6 +157,31 @@ client can make this process do:
   keep an idle connection open (bounded per source IP by
   `max_connections_per_ip`).
 
+## Attacker text and the operator's terminal
+
+Usernames, client banners, URLs and command lines are attacker-controlled, and
+they end up wherever the honeypot writes or displays data. A string containing a
+terminal escape sequence can retitle your terminal, overwrite earlier lines or
+hide text; one containing a newline can forge a whole log line. Where each output
+stands:
+
+- **`var/logs/events.jsonl`**: safe to `cat`/`tail`. JSON encoding escapes control
+  characters, and the record keeps the value exactly as sent, for analysis.
+- **Container/process logs** (`docker compose logs`): all logging goes through
+  `honeypot/logging/sanitize.py`'s `SafeFormatter` (installed by `honeypot.main` and the
+  fetcher worker), which shows control, C1 and invisible/bidi characters as `\xNN`/`\uNNNN`
+  and escapes newlines in a message so it can only ever be one line. This was a real hole:
+  asyncssh logs `Beginning auth for user <username>` at INFO with the username as sent.
+- **`tools/status_check.py`**: escapes the same characters in everything it prints;
+  a test keeps its table identical to the logging one.
+- **`tools/dashboard.py`**: HTML-escapes attacker fields.
+- **Transcripts** (`var/transcripts/*.jsonl`) hold base64, safe until decoded. Anything that
+  *replays* raw session bytes in a terminal would execute their escape sequences: use a
+  throwaway terminal or a browser-based player.
+
+Not covered: text that an operator decodes or extracts by hand. When in doubt, pipe it
+through `cat -v`.
+
 ## Verifying these guarantees
 
 Run the full test suite, including the static-analysis check:

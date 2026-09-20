@@ -138,7 +138,9 @@ Telnet Listener (asyncio)┘         │
   with an ERROR log rather than crashing the container.
 - **Tools and rotation**: `tools/dashboard.py`'s `_load_events` (shared by `status_check.py` and
   `dashboard_server.py`) also reads logrotate's `events.jsonl.N[.gz]` siblings, oldest first;
-  `--no-rotated` opts out. `status_check.py` prints a `Newest event` line and warns on silence.
+  `--no-rotated` opts out. `status_check.py` prints a `Newest event` line and warns on silence, summarises SSH client
+  banners / non-password auth attempts / silent long sessions, and escapes control and bidi
+  characters in every log-derived string it prints (usernames, URLs, banners are attacker-controlled).
 - **`honeypot/config/schema.py`** defines the pydantic models (`PersonaConfig`,
   `ListenerConfig`, `CredentialPolicy`, `FetcherConfig`, `LoggingConfig`,
   `HoneypotConfig`) and `load_config()`. Both `configs/riscv64.yaml` and

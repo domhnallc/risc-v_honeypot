@@ -563,6 +563,14 @@ python3 tools/status_check.py --events var/logs/events.jsonl
 python3 tools/status_check.py --events var/logs/events.jsonl --exclude-ip <your-own-testing-ip>
 ```
 
+Besides the volume and login numbers it summarises the SSH side: which client
+banners connect (`session.client_version`), non-password auth attempts and any
+public key offered from more than one source IP (a shared campaign or toolkit),
+and sessions held open for over 30 seconds that never tried a login or command.
+Everything taken from the log -- usernames, URLs, banners -- is attacker-controlled,
+so control characters and bidi overrides are printed as visible `\xNN`/`\uNNNN`
+escapes instead of being sent to your terminal.
+
 Its output starts with a `Newest event` line (how long ago anything was last
 logged, measured against the whole log so `--exclude-ip` can't hide it) and a
 `WARNING` after `--stale-minutes` (default 30) of silence -- if this is the live

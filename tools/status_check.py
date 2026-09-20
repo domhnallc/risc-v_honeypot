@@ -67,21 +67,96 @@ def _command_patterns(report: Report) -> Counter[tuple[str, ...]]:
     return patterns
 
 
+# Everything below that comes from the event log -- usernames, URLs, SSH client
+# banners, key fingerprints -- is attacker-controlled text, and this tool prints it
+# to an operator's terminal. A crafted username can carry escape sequences (retitle
+# the window, move the cursor to overwrite earlier lines, and in some terminals do
+# worse), a newline that fakes an extra row, or a bidi override that reverses what
+# you read. The HTML dashboard escapes all of this; the CLI now shows such
+# characters as a visible \xNN / \uNNNN instead of acting on them.
+_UNSAFE_CHARS = {c: f"\\x{c:02x}" for c in (*range(0x20), 0x7F, *range(0x80, 0xA0))}
+_UNSAFE_CHARS.update({
+    c: f"\\u{c:04x}"
+    for c in (*range(0x200B, 0x2010), 0x2028, 0x2029, *range(0x202A, 0x202F),
+              *range(0x2060, 0x2065), *range(0x2066, 0x206A), 0xFEFF)
+})
+
+
+def _printable(value: Any) -> str:
+    return str(value).translate(_UNSAFE_CHARS)
+
+
+def _ssh_summary(events: list[dict[str, Any]], top: int = 10, idle_seconds: float = 30) -> list[str]:
+    """Who is connecting (SSH client banners), what non-password auth they try, and
+    which sessions sit silent. Empty for a log from before those events existed."""
+    ip_of = {e["session_id"]: e.get("src_ip") for e in events
+             if e.get("event") == "session.connect" and "session_id" in e}
+    client_of = {e["session_id"]: e.get("client_id") for e in events
+                 if e.get("event") == "session.client_version" and "session_id" in e}
+    attempts = [e for e in events if e.get("event") == "auth.attempt"]
+    lines: list[str] = []
+
+    if client_of:
+        counts = Counter(client_of.values())
+        lines.append(f"\nSSH client versions ({len(client_of)} sessions, {len(counts)} distinct):")
+        lines += [f"  {n:5d}  {_printable(v)}" for v, n in counts.most_common(top)]
+
+    if attempts:
+        methods = Counter(a.get("method") for a in attempts)
+        keys: dict[str, dict[str, Any]] = {}
+        for a in attempts:
+            if a.get("method") == "publickey" and a.get("key_fingerprint"):
+                k = keys.setdefault(a["key_fingerprint"], {"type": a.get("key_type"), "ips": set(), "n": 0})
+                k["ips"].add(a.get("src_ip"))
+                k["n"] += 1
+        summary = ", ".join(f"{_printable(m)} {n}" for m, n in methods.most_common())
+        lines.append(f"\nNon-password auth attempts: {len(attempts)} ({summary}), "
+                     f"{len(keys)} distinct public keys")
+        shared = sorted(((len(k["ips"]), fp, k) for fp, k in keys.items() if len(k["ips"]) > 1),
+                        key=lambda t: (-t[0], t[1]))
+        if shared:
+            lines.append("  Keys offered from more than one source IP (one campaign or toolkit):")
+            lines += [f"    {n_ips:3d} IPs  {_printable(k['type'])}  {_printable(fp)}" for n_ips, fp, k in shared[:top]]
+        users = Counter(a.get("username") for a in attempts)
+        lines.append("  Usernames: " + ", ".join(f"{_printable(u)} x{n}" for u, n in users.most_common(top)))
+
+    # Sessions that stayed connected a while without ever trying a login or a command.
+    active = {e["session_id"] for e in events
+              if e.get("event") in ("login.success", "login.failed", "command.input") and "session_id" in e}
+    methods_of: dict[str, set[str]] = {}
+    for a in attempts:
+        methods_of.setdefault(a.get("session_id"), set()).add(str(a.get("method")))
+    silent: Counter[tuple[Any, Any, tuple[str, ...]]] = Counter()
+    for e in events:
+        if (e.get("event") == "session.closed" and e.get("session_id") not in active
+                and isinstance(e.get("duration_seconds"), (int, float)) and e["duration_seconds"] > idle_seconds):
+            sid = e.get("session_id")
+            silent[(ip_of.get(sid), client_of.get(sid), tuple(sorted(methods_of.get(sid, ()))))] += 1
+    if silent:
+        lines.append(f"\nSessions held open > {idle_seconds:g}s without trying a login or command "
+                     f"({sum(silent.values())}):")
+        for (ip, client, kinds), n in silent.most_common(top):
+            lines.append(f"  {n:4d}  {(_printable(ip) if ip else '?'):16s} {_printable(client) if client else '-'}  "
+                         f"{'/'.join(_printable(k) for k in kinds) or 'no auth attempt'}")
+    return lines
+
+
 def _download_line(d: dict) -> str:
     """One row of the download list. Stage-two fetches (URLs found by
     scanning a captured script) are tagged so they are not mistaken for
     something the attacker typed, and ELF samples show their architecture --
     the RISC-V ones are what this whole project is looking for."""
-    tag = f"[stage {d['stage']}] " if d.get("stage") else ""
+    tag = f"[stage {_printable(d['stage'])}] " if d.get("stage") else ""
     arch = ""
     if d.get("detected_machine"):
         flags = d.get("detected_flags")
         details = [f"{d['detected_bitness']}-bit" if d.get("detected_bitness") else None,
                    d.get("detected_endianness"),
                    # the decoded ABI when there is one; otherwise the raw word, unless it is zero
-                   d.get("detected_abi") or (f"flags={flags:#x}" if flags else None)]
-        arch = "  " + " ".join([d["detected_machine"], *[x for x in details if x]])
-    return f"  {d.get('timestamp')}  {d.get('outcome', '-'):8s}  {tag}{d.get('url')}{arch}"
+                   d.get("detected_abi") or (f"flags={flags:#x}" if isinstance(flags, int) and flags else None)]
+        arch = "  " + _printable(" ".join([d["detected_machine"], *[str(x) for x in details if x]]))
+    return (f"  {_printable(d.get('timestamp'))}  {_printable(d.get('outcome', '-')):8s}  "
+            f"{tag}{_printable(d.get('url'))}{arch}")
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -152,12 +227,12 @@ def main() -> None:
     protocols = Counter(s["protocol"] for s in report.sessions.values())
     successful_downloads = sum(1 for d in report.downloads if d.get("outcome") == "success")
 
-    print(f"Window:       {report.first_seen or '-'}  to  {report.last_seen or '-'}")
+    print(f"Window:       {_printable(report.first_seen or '-')}  to  {_printable(report.last_seen or '-')}")
     for line in _liveness_lines(all_events, stale_minutes=args.stale_minutes):
         print(line)
     print(f"Volume:       {len(report.sessions)} sessions")
     print(f"Unique IPs:   {len(report.unique_ips)}")
-    print(f"Protocols:    {dict(protocols)}")
+    print(f"Protocols:    {_printable(dict(protocols))}")
     print(f"Logins:       {report.login_success} succeeded / {total_logins} total ({pct:.1f}%)")
     print(f"Off-wordlist: {len(report.off_list_logins)} credential attempts")
     print(f"Downloads:    {len(report.downloads)} attempts, {successful_downloads} succeeded")
@@ -165,7 +240,10 @@ def main() -> None:
 
     print(f"\nTop {args.top} source IPs:")
     for ip in report.unique_ips[: args.top]:
-        print(f"  {report.ip_session_counts[ip]:5d}  {ip}")
+        print(f"  {report.ip_session_counts[ip]:5d}  {_printable(ip)}")
+
+    for line in _ssh_summary(events, top=args.top):
+        print(line)
 
     patterns = _command_patterns(report)
     blank_count = patterns[()] + patterns[("",)]
@@ -173,7 +251,7 @@ def main() -> None:
     print(f"\nCommand patterns across successful logins ({blank_count} sent nothing -- harvester-style):")
     if notable:
         for pattern, count in notable[: args.top]:
-            print(f"  {count:5d}  {pattern}")
+            print(f"  {count:5d}  {_printable(pattern)}")
     else:
         print("  (none -- every successful login sent nothing)")
 
@@ -186,7 +264,8 @@ def main() -> None:
         print(f"\nTop {args.top} repeat visitors:")
         for ip, logins in report.repeat_visitor_ips[: args.top]:
             usernames = sorted({e.get("username", "") for e in logins})
-            print(f"  {len(logins):3d} logins  {ip:16s} usernames: {', '.join(usernames)}")
+            print(f"  {len(logins):3d} logins  {_printable(ip):16s} usernames: "
+                  f"{', '.join(_printable(u) for u in usernames)}")
 
 
 if __name__ == "__main__":

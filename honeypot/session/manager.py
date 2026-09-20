@@ -247,6 +247,8 @@ class SessionManager:
             detected_bitness=fetch_result.detected_bitness,
             detected_machine=fetch_result.detected_machine,
             detected_endianness=fetch_result.detected_endianness,
+            detected_flags=fetch_result.detected_flags,
+            detected_abi=fetch_result.detected_abi,
             arch_mismatch=fetch_result.arch_mismatch,
             error=fetch_result.error,
             http_status=fetch_result.http_status,

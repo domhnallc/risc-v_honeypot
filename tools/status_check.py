@@ -75,8 +75,11 @@ def _download_line(d: dict) -> str:
     tag = f"[stage {d['stage']}] " if d.get("stage") else ""
     arch = ""
     if d.get("detected_machine"):
+        flags = d.get("detected_flags")
         details = [f"{d['detected_bitness']}-bit" if d.get("detected_bitness") else None,
-                   d.get("detected_endianness")]
+                   d.get("detected_endianness"),
+                   # the decoded ABI when there is one; otherwise the raw word, unless it is zero
+                   d.get("detected_abi") or (f"flags={flags:#x}" if flags else None)]
         arch = "  " + " ".join([d["detected_machine"], *[x for x in details if x]])
     return f"  {d.get('timestamp')}  {d.get('outcome', '-'):8s}  {tag}{d.get('url')}{arch}"
 

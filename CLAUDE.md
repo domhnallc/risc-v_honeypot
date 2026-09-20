@@ -51,8 +51,10 @@ in `SAFETY.md`; summary:
    `.json` sidecar with `chmod 0o440` immediately after hashing/detection; nothing after
    that point opens the file for anything but reading bytes.
 4. **File-type inspection is static-only.** `honeypot/fetcher/elf.py` is a hand-rolled
-   ELF header parser (reads `e_ident`/`e_machine` via `struct.unpack` at fixed offsets,
-   plus a small magic-byte table for non-ELF types) — deliberately not `python-magic`/
+   ELF header parser (reads `e_ident`/`e_machine`/`e_flags` via `struct.unpack` at fixed
+   offsets, plus a small magic-byte table for non-ELF types). `e_flags` is decoded only for ARM
+   (EABI version, float ABI -- *not* the v5/v6/v7 level, which lives in a section this parser never
+   walks), MIPS, RISC-V and SuperH, cross-checked against GNU `readelf`; other machines keep the raw word — deliberately not `python-magic`/
    libmagic or the `file` binary, to avoid a native-library dependency and keep detection
    auditable in one file. This is a spec-permitted substitution (spec §4.4 step 5 allows
    either).

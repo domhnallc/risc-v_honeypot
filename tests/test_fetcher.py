@@ -244,3 +244,18 @@ def test_result_and_sidecar_record_endianness(tmp_path):
     assert result.detected_machine == "EM_MIPS" and result.detected_endianness == "big"
     sidecar = json.loads(Path(result.quarantine_path).with_suffix(".json").read_text())
     assert sidecar["detected_endianness"] == "big"
+
+
+def test_result_and_sidecar_record_flags_and_abi(tmp_path):
+    from tests.test_elf import _full_header
+    (tmp_path / "www").mkdir()
+    (tmp_path / "www" / "telnetd").write_bytes(_full_header(ei_class=1, ei_data=1, e_machine=40, e_flags=0x05000400))
+    server = _Server(tmp_path / "www")
+    try:
+        job = make_job("s", "10.0.0.1", server.url("telnetd"), "http", "telnetd", "wget")
+        result = asyncio.run(fetch_and_quarantine(job, _config(tmp_path)))
+    finally:
+        server.stop()
+    assert (result.detected_flags, result.detected_abi) == (0x05000400, "EABI5 hard-float")
+    sidecar = json.loads(Path(result.quarantine_path).with_suffix(".json").read_text())
+    assert (sidecar["detected_flags"], sidecar["detected_abi"]) == (0x05000400, "EABI5 hard-float")

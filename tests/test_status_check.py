@@ -96,3 +96,13 @@ def test_piping_into_head_exits_quietly(tmp_path):
 
     assert proc.wait(timeout=30) == 0
     assert b"Traceback" not in stderr and b"BrokenPipe" not in stderr and b"Exception ignored" not in stderr
+
+
+def test_download_line_shows_the_decoded_abi_or_else_the_raw_flags():
+    base = {"timestamp": "T", "outcome": "success", "url": "http://x/a", "stage": 2,
+            "detected_machine": "EM_ARM", "detected_bitness": 32, "detected_endianness": "little"}
+    assert _download_line({**base, "detected_flags": 0x05000400, "detected_abi": "EABI5 hard-float"}
+                          ).endswith("EM_ARM 32-bit little EABI5 hard-float")
+    ppc = {**base, "detected_machine": "EM_PPC", "detected_flags": 0x10000, "detected_abi": None}
+    assert _download_line(ppc).endswith("EM_PPC 32-bit little flags=0x10000")
+    assert _download_line({**ppc, "detected_flags": 0}).endswith("EM_PPC 32-bit little")     # zero is noise

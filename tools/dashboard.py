@@ -432,7 +432,8 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         detected = ev.get("detected_type") or "-"
         if ev.get("detected_machine"):
             endian = f", {ev['detected_endianness']}-endian" if ev.get("detected_endianness") else ""
-            detected = f"{detected} / {ev.get('detected_machine')} ({ev.get('detected_bitness')}-bit{endian})"
+            abi = f", {ev['detected_abi']}" if ev.get("detected_abi") else ""
+            detected = f"{detected} / {ev.get('detected_machine')} ({ev.get('detected_bitness')}-bit{endian}{abi})"
         arch = ev.get("arch_mismatch")
         arch_label = "-" if arch is None else ("MISMATCH" if arch else "match")
         download_rows.append([

@@ -39,6 +39,10 @@ class FetchResult:
     detected_machine: str | None = None
     # "little" / "big" from the ELF header; tells MIPS from MIPSEL, and so on.
     detected_endianness: str | None = None
+    # Raw ELF e_flags and, where decodable, what they mean (e.g. "EABI5 hard-float",
+    # "MIPS32 o32", "RVC double-float"). See honeypot/fetcher/elf.py for the limits.
+    detected_flags: int | None = None
+    detected_abi: str | None = None
     arch_mismatch: bool | None = None
     quarantine_path: str | None = None
     error: str | None = None
@@ -159,6 +163,8 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
         detected_bitness=detected.bitness,
         detected_machine=detected.machine,
         detected_endianness=detected.endianness,
+        detected_flags=detected.flags,
+        detected_abi=detected.abi,
         arch_mismatch=arch_mismatch,
         quarantine_path=str(final_path),
         http_status=http_status,
@@ -179,6 +185,8 @@ async def fetch_and_quarantine(job: DownloadJob, config: FetcherConfig,
             "detected_bitness": result.detected_bitness,
             "detected_machine": result.detected_machine,
             "detected_endianness": result.detected_endianness,
+            "detected_flags": result.detected_flags,
+            "detected_abi": result.detected_abi,
             "arch_mismatch": arch_mismatch,
             "http_status": http_status,
             "depth": job.depth,

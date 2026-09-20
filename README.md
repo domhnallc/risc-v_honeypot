@@ -236,9 +236,21 @@ runs keep it at `var/ssh_host_key`.
 If the key directory is missing or not writable by UID 10001, the honeypot
 still starts -- an unreachable honeypot is worse than a changing fingerprint --
 on a **temporary in-memory key**, and logs `SSH host key ... is unusable` at
-`ERROR`. After deploying, check `docker compose logs honeypot | grep -i "host key"`.
-An existing key file that can't be read or parsed is left untouched, never
+`ERROR`. After deploying, check that `docker compose logs honeypot | grep -E "host key .* unusable"`
+prints nothing. (Don't grep for a bare "host key": asyncssh logs an ordinary
+INFO line, `Sending server host keys disabled`, for every connection.) An
+existing key file that can't be read or parsed is left untouched, never
 overwritten.
+
+To confirm the fingerprint survives a rebuild, compare the one the server
+presents before and after. Use the *published* port -- `docker compose port
+honeypot 2222` prints it, and it isn't 2222 if you mapped `22:2222`:
+
+```
+PORT=$(docker compose port honeypot 2222 | cut -d: -f2)
+ssh-keyscan -t rsa -p "$PORT" 127.0.0.1 2>/dev/null | ssh-keygen -lf -
+```
+`(stdin) is not a public key file` means keyscan got nothing back (wrong port).
 
 To keep the key of a deployment that predates this (it was generated inside the
 container and would otherwise be lost on the next rebuild), copy it out first:

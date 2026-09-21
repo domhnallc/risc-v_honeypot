@@ -1,3 +1,5 @@
+NOTE: This is primarily an exercise in working with Claude Code to see what can be created with its help.  Take everything with a pinch of salt.
+
 # RISC-V Medium-Interaction Honeypot
 
 A medium-interaction SSH/Telnet honeypot that impersonates a RISC-V Linux

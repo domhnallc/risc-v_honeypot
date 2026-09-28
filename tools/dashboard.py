@@ -253,6 +253,101 @@ def _esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
+_HTTP_STATUS_RE = re.compile(r"^HTTP (\d{3})$")
+
+
+def _failure_reason(error: str | None) -> str:
+    """Collapse a fetch failure's raw `error` string into a short, stable bucket
+    for grouping -- e.g. every "HTTP 404" together, regardless of which URL.
+    Unlike honeypot/session/manager.py's _wget_error_text (which deliberately
+    generalises what the *attacker* sees, to avoid leaking network detail back
+    to them), this is for the operator's own dashboard, so the real reason is
+    kept -- just bucketed so 50 timeouts don't become 50 separate rows.
+    """
+    error = error or "(unknown)"
+    m = _HTTP_STATUS_RE.match(error)
+    if m:
+        return f"HTTP {m.group(1)}"
+    if error.startswith("blocked non-public destination"):
+        return "blocked: non-public destination (SSRF guard)"
+    if error.startswith("protocol ") and "not permitted" in error:
+        return "protocol not permitted (fetcher.allowed_protocols)"
+    if "not yet implemented" in error:
+        return "protocol not implemented (tftp/ftp)"
+    if "exceeded max_file_size_bytes" in error:
+        return "oversized transfer (max_file_size_bytes)"
+    if "per-session download limit" in error:
+        return "per-session download limit reached"
+    if "timed out waiting for isolated fetcher" in error:
+        return "isolated fetcher did not respond (queued mode)"
+    return error[:80] + ("..." if len(error) > 80 else "")
+
+
+def _architecture_breakdown(downloads: list[dict[str, Any]]) -> list[list[str]]:
+    """One row per distinct (type/machine, bitness, endianness, ABI) combination
+    seen among *successful* downloads, most-downloaded first -- this is the
+    "which CPUs are droppers actually serving" view the RISC-V capture side of
+    this project cares about most. Stage-2 count is how many of that row's
+    downloads were found by scanning a captured script rather than typed
+    directly by the attacker (see honeypot/fetcher/script_scan.py)."""
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for ev in downloads:
+        if ev.get("outcome") != "success":
+            continue
+        is_elf = ev.get("detected_type") == "elf"
+        machine = ev.get("detected_machine") or "(unknown machine)" if is_elf else (ev.get("detected_type") or "unknown")
+        bitness = f"{ev['detected_bitness']}-bit" if ev.get("detected_bitness") else "-"
+        endianness = ev.get("detected_endianness") or "-"
+        abi = ev.get("detected_abi") or (f"flags={ev['detected_flags']:#x}" if ev.get("detected_flags") else "-")
+        key = (machine, bitness, endianness, abi if is_elf else "-")
+        g = groups.setdefault(key, {"count": 0, "stage2": 0, "shas": set(), "match": 0, "mismatch": 0})
+        g["count"] += 1
+        if ev.get("stage"):
+            g["stage2"] += 1
+        if ev.get("sha256"):
+            g["shas"].add(ev["sha256"])
+        if ev.get("arch_mismatch") is False:
+            g["match"] += 1
+        elif ev.get("arch_mismatch") is True:
+            g["mismatch"] += 1
+
+    rows = []
+    for (machine, bitness, endianness, abi), g in sorted(groups.items(), key=lambda kv: -kv[1]["count"]):
+        is_match = g["match"] > 0
+        label = _esc(machine) + (" <span class='tag'>MATCHES PERSONA</span>" if is_match else "")
+        arch_note = "-"
+        if g["match"] or g["mismatch"]:
+            parts = []
+            if g["match"]:
+                parts.append(f"{g['match']} match")
+            if g["mismatch"]:
+                parts.append(f"{g['mismatch']} mismatch")
+            arch_note = ", ".join(parts)
+        rows.append({
+            "cells": [label, _esc(bitness), _esc(endianness), _esc(abi), str(g["count"]),
+                     str(len(g["shas"])), str(g["stage2"]) if g["stage2"] else "-", arch_note],
+            "match": is_match,
+        })
+    return rows
+
+
+def _failure_breakdown(downloads: list[dict[str, Any]]) -> list[list[str]]:
+    """One row per failure-reason bucket, most common first."""
+    groups: dict[str, dict[str, int]] = {}
+    for ev in downloads:
+        if ev.get("outcome") != "failed":
+            continue
+        reason = _failure_reason(ev.get("error"))
+        g = groups.setdefault(reason, {"count": 0, "stage2": 0})
+        g["count"] += 1
+        if ev.get("stage"):
+            g["stage2"] += 1
+    return [
+        [_esc(reason), str(g["count"]), str(g["stage2"]) if g["stage2"] else "-"]
+        for reason, g in sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+    ]
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> str:
     if not rows:
         return "<p class='empty'>No data yet.</p>"
@@ -366,6 +461,8 @@ td.wrap-cell { white-space: normal; word-break: break-all; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8em; }
 .pill.ok { background: #1c8a4a33; color: #1c8a4a; }
 .pill.bad { background: #c4384033; color: #c43840; }
+.arch-row.match { background: #1c8a4a1a; }
+.arch-row .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.75em; background: var(--accent); color: var(--panel); font-weight: 600; }
 """
 
 
@@ -378,6 +475,7 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         (str(len(report.unique_ips)), "Unique source IPs"),
         (str(len(report.commands)), "Commands captured"),
         (str(len(report.downloads)), "Download attempts"),
+        (str(sum(1 for d in report.downloads if d.get("stage"))), "Stage-2 downloads"),
         (f"{report.login_success} / {total_logins}", "Accepted / total logins"),
         (str(len(report.off_list_logins)), "Off-wordlist credentials"),
         (str(len(report.repeat_visitor_ips)), "Repeat visitor IPs"),
@@ -449,6 +547,28 @@ def render_html(report: Report, geo: GeoLookup) -> str:
     download_table = _table(
         ["Timestamp", "Outcome", "URL", "Filename", "Bytes", "SHA256", "Detected type", "Arch vs. persona"],
         download_rows,
+    )
+
+    arch_rows = _architecture_breakdown(report.downloads)
+    if arch_rows:
+        arch_table = (
+            "<table><thead><tr>" +
+            "".join(f"<th>{h}</th>" for h in
+                    ["CPU / type", "Bitness", "Endianness", "ABI / flags", "Downloads",
+                     "Distinct samples", "Stage-2", "vs. persona"]) +
+            "</tr></thead><tbody>" +
+            "".join(
+                f"<tr class='arch-row{' match' if r['match'] else ''}'>" +
+                "".join(f"<td>{c}</td>" for c in r["cells"]) + "</tr>"
+                for r in arch_rows
+            ) + "</tbody></table>"
+        )
+    else:
+        arch_table = "<p class='empty'>No successful downloads yet.</p>"
+
+    failure_table = _table(
+        ["Reason", "Count", "Stage-2"],
+        _failure_breakdown(report.downloads),
     )
 
     off_list_rows = []
@@ -528,6 +648,16 @@ def render_html(report: Report, geo: GeoLookup) -> str:
   </div>
   <div class="panel"><h2>Last 10 commands</h2>{command_table}</div>
   <div class="panel"><h2>Last 10 file downloads</h2>{download_table}</div>
+  <div class="panel">
+    <h2>Downloads by architecture</h2>
+    <p class="subtitle" style="margin:-4px 0 10px">Successful downloads only, grouped by detected CPU/type,
+    bitness, endianness and ABI (flags shown raw where not decoded) -- "Distinct samples" counts unique
+    SHA256s so re-fetches of the same payload aren't double-counted, and "Stage-2" is how many were found
+    by scanning a captured script rather than typed directly (see honeypot/fetcher/script_scan.py). Rows
+    matching this honeypot's persona architecture are highlighted.</p>
+    {arch_table}
+  </div>
+  <div class="panel"><h2>Failed downloads by reason</h2>{failure_table}</div>
   {off_list_section}
   <div class="grid-2">
     <div class="panel"><h2>Attempted usernames</h2>{_word_cloud(report.username_counts, "No login attempts yet.")}</div>

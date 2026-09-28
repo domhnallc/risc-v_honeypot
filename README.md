@@ -592,6 +592,18 @@ for the same reason as everywhere else in this README: CLAUDE.md / the
 build spec mark a web dashboard as out of scope for the honeypot itself,
 so these are separate, read-only consumers of the logs, never imported by
 or running alongside the listeners. All three agree on the numbers --
+The HTML report (both the static and live forms) breaks downloads down by
+detected architecture -- CPU/type, bitness, endianness, ABI (decoded where
+`honeypot/fetcher/elf.py` can; the raw `e_flags` word otherwise), successful
+downloads, distinct samples (deduped by SHA256, so re-fetches of the same
+payload aren't double-counted), how many were found by stage two (a script
+listing more URLs, see `honeypot/fetcher/script_scan.py`) rather than typed
+directly by the attacker, and how many match vs. mismatch this honeypot's own
+persona architecture -- rows that match are highlighted, since a RISC-V match
+is the whole point of the project. A second table buckets failed downloads by
+reason (HTTP status, blocked by the SSRF guard, unimplemented protocol, and so
+on) with counts, so e.g. fifty 404s show as one row, not fifty.
+
 `dashboard_server.py` and `status_check.py` both reuse `dashboard.py`'s
 `Report` for aggregation rather than each computing their own.
 

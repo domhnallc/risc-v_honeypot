@@ -143,3 +143,147 @@ def test_off_wordlist_section_explains_itself_when_not_configured():
     )
     out = render_html(Report(events), GeoLookup(None))
     assert "No username/password wordlist configured" in out
+
+
+# -- architecture breakdown ---------------------------------------------------------
+
+def _dl(**kw):
+    kw.setdefault("event", "file.download")
+    kw.setdefault("timestamp", "2026-01-01T00:00:00Z")
+    kw.setdefault("outcome", "success")
+    kw.setdefault("url", "http://c2/x")
+    return kw
+
+
+def test_architecture_breakdown_groups_by_machine_bitness_endianness_and_abi():
+    from dashboard import _architecture_breakdown
+    rows = _architecture_breakdown([
+        _dl(sha256="a" * 64, detected_type="elf", detected_machine="EM_MIPS",
+            detected_bitness=32, detected_endianness="big", detected_abi="MIPS32 o32"),
+        _dl(sha256="a" * 64, detected_type="elf", detected_machine="EM_MIPS",     # same sample refetched
+            detected_bitness=32, detected_endianness="big", detected_abi="MIPS32 o32"),
+        _dl(sha256="b" * 64, detected_type="elf", detected_machine="EM_MIPS",     # same machine, LE (MIPSEL)
+            detected_bitness=32, detected_endianness="little", detected_abi="MIPS32 o32"),
+    ])
+    assert len(rows) == 2
+    be, le = sorted(rows, key=lambda r: r["cells"][2])   # "big" < "little"
+    assert be["cells"][:6] == ["EM_MIPS", "32-bit", "big", "MIPS32 o32", "2", "1"]
+    assert le["cells"][:6] == ["EM_MIPS", "32-bit", "little", "MIPS32 o32", "1", "1"]
+
+
+def test_architecture_breakdown_sorts_most_downloaded_first():
+    from dashboard import _architecture_breakdown
+    rows = _architecture_breakdown([
+        _dl(sha256=str(i), detected_type="elf", detected_machine="EM_ARM", detected_bitness=32)
+        for i in range(3)
+    ] + [_dl(sha256="x" * 64, detected_type="elf", detected_machine="EM_X86_64", detected_bitness=64)])
+    assert [r["cells"][0] for r in rows] == ["EM_ARM", "EM_X86_64"]
+
+
+def test_architecture_breakdown_highlights_only_rows_that_match_the_persona():
+    from dashboard import _architecture_breakdown
+    rows = _architecture_breakdown([
+        _dl(sha256="a" * 64, detected_type="elf", detected_machine="EM_RISCV",
+            detected_bitness=64, arch_mismatch=False),
+        _dl(sha256="b" * 64, detected_type="elf", detected_machine="EM_RISCV",
+            detected_bitness=32, arch_mismatch=True),
+    ])
+    matched = next(r for r in rows if r["cells"][1] == "64-bit")
+    mismatched = next(r for r in rows if r["cells"][1] == "32-bit")
+    assert matched["match"] is True and "MATCHES PERSONA" in matched["cells"][0]
+    assert mismatched["match"] is False and "MATCHES PERSONA" not in mismatched["cells"][0]
+    assert matched["cells"][-1] == "1 match" and mismatched["cells"][-1] == "1 mismatch"
+
+
+def test_architecture_breakdown_counts_stage2_and_non_elf_types_separately():
+    from dashboard import _architecture_breakdown
+    rows = _architecture_breakdown([
+        _dl(sha256="a" * 64, detected_type="elf", detected_machine="EM_ARM", detected_bitness=32, stage=2),
+        _dl(sha256="b" * 64, detected_type="script"),
+        _dl(sha256="c" * 64, detected_type="unknown"),
+        _dl(url="http://c2/y", outcome="requested"),          # excluded: not a completed download
+        _dl(url="http://c2/z", outcome="failed", error="HTTP 404"),   # excluded: not a success
+    ])
+    by_machine = {r["cells"][0]: r for r in rows}
+    assert len(rows) == 3
+    assert by_machine["EM_ARM"]["cells"][6] == "1"                  # stage-2 count shown
+    assert by_machine["script"]["cells"][1:4] == ["-", "-", "-"]     # non-ELF: no bitness/endianness/abi
+    assert by_machine["script"]["cells"][6] == "-"                  # no stage: shown as "-", not "0"
+    assert "unknown" in by_machine
+
+
+def test_architecture_breakdown_falls_back_to_raw_flags_when_undecoded():
+    from dashboard import _architecture_breakdown
+    rows = _architecture_breakdown([_dl(sha256="a" * 64, detected_type="elf", detected_machine="EM_PPC",
+                                        detected_bitness=32, detected_flags=0x10000, detected_abi=None)])
+    assert rows[0]["cells"][3] == "flags=0x10000"
+
+
+def test_architecture_breakdown_empty_for_no_successful_downloads():
+    from dashboard import _architecture_breakdown
+    assert _architecture_breakdown([]) == []
+    assert _architecture_breakdown([_dl(outcome="failed", error="HTTP 404")]) == []
+
+
+# -- failure-reason breakdown --------------------------------------------------------
+
+def test_failure_reason_buckets_by_type_not_by_literal_url_or_message():
+    from dashboard import _failure_reason
+    assert _failure_reason("HTTP 404") == "HTTP 404"
+    assert _failure_reason("HTTP 500") == "HTTP 500"
+    assert _failure_reason("blocked non-public destination: 169.254.169.254 is link-local") == \
+        "blocked: non-public destination (SSRF guard)"
+    assert _failure_reason("protocol 'tftp' not permitted by fetcher config") == \
+        "protocol not permitted (fetcher.allowed_protocols)"
+    assert _failure_reason("protocol 'tftp' not yet implemented") == "protocol not implemented (tftp/ftp)"
+    assert _failure_reason("payload exceeded max_file_size_bytes (52428800)") == \
+        "oversized transfer (max_file_size_bytes)"
+    assert _failure_reason("per-session download limit reached") == "per-session download limit reached"
+    assert _failure_reason("timed out waiting for isolated fetcher") == \
+        "isolated fetcher did not respond (queued mode)"
+    assert _failure_reason(None) == "(unknown)"
+
+
+def test_failure_reason_truncates_long_unrecognised_errors():
+    from dashboard import _failure_reason
+    long_error = "Cannot connect to host " + "a" * 100
+    reason = _failure_reason(long_error)
+    assert len(reason) <= 83 and reason.endswith("...")
+
+
+def test_failure_breakdown_groups_counts_and_flags_stage2():
+    from dashboard import _failure_breakdown
+    rows = _failure_breakdown([
+        _dl(outcome="failed", error="HTTP 404"),
+        _dl(outcome="failed", error="HTTP 404"),
+        _dl(outcome="failed", error="HTTP 404", stage=2),
+        _dl(outcome="failed", error="protocol 'tftp' not permitted by fetcher config"),
+        _dl(outcome="success"),   # excluded: not a failure
+    ])
+    assert rows[0] == ["HTTP 404", "3", "1"]
+    assert ["protocol not permitted (fetcher.allowed_protocols)", "1", "-"] in rows
+
+
+def test_architecture_and_failure_tables_appear_in_the_rendered_page():
+    events = _events(
+        _dl(detected_type="elf", detected_machine="EM_RISCV", detected_bitness=64,
+            detected_endianness="little", detected_abi="RVC double-float",
+            arch_mismatch=False, sha256="a" * 64, stage=2),
+        _dl(outcome="failed", error="HTTP 404"),
+    )
+    out = render_html(Report(events), GeoLookup(None))
+    assert "Downloads by architecture" in out and "EM_RISCV" in out and "MATCHES PERSONA" in out
+    assert "Failed downloads by reason" in out and "HTTP 404" in out
+    assert "<div class='n'>1</div><div class='l'>Stage-2 downloads</div>" in out   # not just the label
+
+
+def test_architecture_and_failure_error_text_is_escaped():
+    events = _events(_dl(outcome="failed", error="Cannot connect to <script>pwn()</script>"))
+    out = render_html(Report(events), GeoLookup(None))
+    assert "<script>pwn()</script>" not in out
+    assert "&lt;script&gt;pwn()&lt;/script&gt;" in out
+
+
+def test_empty_architecture_and_failure_sections_show_fallback_text():
+    out = render_html(Report([]), GeoLookup(None))
+    assert "No successful downloads yet." in out

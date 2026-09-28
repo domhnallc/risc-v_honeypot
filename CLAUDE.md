@@ -141,6 +141,11 @@ Telnet Listener (asyncio)┘         │
   `--no-rotated` opts out. `status_check.py` prints a `Newest event` line and warns on silence, summarises SSH client
   banners / non-password auth attempts / silent long sessions, and escapes control and bidi
   characters in every log-derived string it prints (usernames, URLs, banners are attacker-controlled).
+- **`tools/dashboard.py`**'s HTML report groups successful downloads by detected
+  architecture (machine/bitness/endianness/ABI, deduped by SHA256, stage-2 count, match
+  vs. mismatch vs. the honeypot's own persona -- matching rows highlighted) and failed
+  downloads by a bucketed failure reason (`_failure_reason`); both feed `status_check.py`
+  and the live `dashboard_server.py` via the same `Report`/render code.
 - **`honeypot/config/schema.py`** defines the pydantic models (`PersonaConfig`,
   `ListenerConfig`, `CredentialPolicy`, `FetcherConfig`, `LoggingConfig`,
   `HoneypotConfig`) and `load_config()`. Both `configs/riscv64.yaml` and

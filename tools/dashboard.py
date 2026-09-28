@@ -41,6 +41,7 @@ import math
 import re
 import sys
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -283,52 +284,158 @@ def _failure_reason(error: str | None) -> str:
     return error[:80] + ("..." if len(error) > 80 else "")
 
 
-def _architecture_breakdown(downloads: list[dict[str, Any]]) -> list[list[str]]:
-    """One row per distinct (type/machine, bitness, endianness, ABI) combination
-    seen among *successful* downloads, most-downloaded first -- this is the
-    "which CPUs are droppers actually serving" view the RISC-V capture side of
-    this project cares about most. Stage-2 count is how many of that row's
-    downloads were found by scanning a captured script rather than typed
-    directly by the attacker (see honeypot/fetcher/script_scan.py)."""
-    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+# Related machines lumped into one family for the at-a-glance donut below -- e.g.
+# EM_MIPS/EM_MIPS_RS3_LE (told apart only by endianness, i.e. MIPS vs. MIPSEL) are
+# one slice here. The endianness/ABI/e_flags detail this collapses is not lost --
+# it is still in every raw file.download event and in tools/status_check.py's
+# per-download listing -- it is just not what a "which CPUs, roughly" chart needs.
+_MACHINE_FAMILY = {
+    "EM_RISCV": "RISC-V",
+    "EM_ARM": "ARM",
+    "EM_AARCH64": "AArch64",  # genuinely distinct from 32-bit ARM, not lumped in with it
+    "EM_MIPS": "MIPS", "EM_MIPS_RS3_LE": "MIPS",
+    "EM_X86_64": "x86-64",
+    "EM_386": "x86",
+    "EM_PPC": "PowerPC", "EM_PPC64": "PowerPC",
+    "EM_SPARC": "SPARC", "EM_SPARC32PLUS": "SPARC", "EM_SPARCV9": "SPARC",
+    "EM_SH": "SuperH",
+    "EM_68K": "m68k",
+}
+
+# A non-ELF download (a captured script, a stray HTML/gzip/etc. page) isn't a CPU
+# architecture at all -- it's a different dimension (file *type*, not machine
+# identity) that this chart isn't about. Rather than compete for one of the 8
+# identity slots (and risk colliding with a real architecture -- e.g. "script" is
+# the single most common non-ELF capture, since every dropper run starts with one,
+# so it routinely co-occurs with RISC-V/ARM/etc in the very same chart), every
+# non-ELF label folds into this one neutral bucket, same treatment as "Other".
+# The type distinction (script vs. unknown junk vs. gzip, ...) isn't lost -- it's
+# still in every raw file.download event and status_check.py -- just not diagrammed
+# here, per this chart's own "which CPUs are droppers serving" subtitle.
+_NON_ELF_LABEL = "(non-ELF file)"
+
+# Fixed *display* order: known families are legend-ordered/kept-when-capping in this
+# order (RISC-V first, since a match there is the actual point of the project);
+# anything unlisted (an EM_UNKNOWN(n) or otherwise unmapped machine) sorts
+# alphabetically after these, still ahead of the final "Other" catch-all. This is
+# NOT the color mapping -- see _slot_for_label below for why a fixed *position*
+# in a list that shrinks/grows per render cannot double as a stable color key.
+_FAMILY_ORDER = ["RISC-V", "ARM", "AArch64", "MIPS", "x86-64", "x86", "PowerPC", "SPARC", "SuperH", "m68k"]
+
+# Fixed *color* slot per family, independent of which other families happen to be
+# present in a given render. Assigning by position in the (per-render) rows list
+# instead would mean ARM silently inherits RISC-V's blue on a day RISC-V had zero
+# downloads -- exactly the "recolor on filter" anti-pattern, just triggered by the
+# data changing day to day instead of a UI filter. Only 8 families get a
+# guaranteed-unique slot (there are only 8 validated slots); anything else --
+# an exotic/unmapped ELF machine this file doesn't have a family for yet -- gets a
+# slot from its own label text (never Python's hash(): that is salted per-process
+# and would repaint the chart on every single run) rather than sharing one of the
+# 8 guaranteed slots. Collisions there are accepted as a rare edge case; the
+# mainline one (architecture vs. non-ELF file type) is handled separately, above.
+_FAMILY_SLOT = {name: f"s{i + 1}" for i, name in enumerate(
+    ["RISC-V", "ARM", "AArch64", "MIPS", "x86-64", "x86", "PowerPC", "SPARC"])}
+
+
+# The ARM sub-chart's possible labels are a small, fully enumerable, closed set
+# (unlike CPU families, which are open-ended) -- so, unlike _FAMILY_SLOT, every
+# possible value gets a guaranteed slot here, no hash fallback/collision risk at
+# all. Disjoint from every CPU-family label's own text, so sharing one
+# _slot_for_label with the main donut below is safe (no cross-dict overlap).
+_ARM_EABI_ORDER = ["EABI5", "EABI4", "EABI3", "EABI2", "EABI1", "EABI0", "pre-EABI", "unknown"]
+_ARM_EABI_SLOT = {name: f"s{i + 1}" for i, name in enumerate(_ARM_EABI_ORDER)}
+
+
+def _slot_for_label(label: str) -> str:
+    if label in ("Other", _NON_ELF_LABEL):
+        return "other"
+    if label in _FAMILY_SLOT:
+        return _FAMILY_SLOT[label]
+    if label in _ARM_EABI_SLOT:
+        return _ARM_EABI_SLOT[label]
+    return f"s{sum(ord(c) for c in label) % 8 + 1}"
+
+
+_MAX_DONUT_SLICES = 6  # a donut reads at a glance only up to ~6 segments (dataviz skill)
+
+_ARM_EABI_RE = re.compile(r"^(EABI\d+|pre-EABI)\b")
+
+
+def _arch_family(ev: dict[str, Any]) -> str:
+    """The lumped family label for one successful download's detected type."""
+    if ev.get("detected_type") != "elf":
+        return _NON_ELF_LABEL
+    machine = ev.get("detected_machine") or ""
+    return _MACHINE_FAMILY.get(machine, machine or "(unknown machine)")
+
+
+def _arm_eabi_bucket(ev: dict[str, Any]) -> str:
+    """Which EABI version an ARM download's decoded ABI names, or 'unknown' when
+    e_flags wasn't decodable (see honeypot/fetcher/elf.py's ARM decoding)."""
+    abi = ev.get("detected_abi")
+    if not abi:
+        return "unknown"
+    m = _ARM_EABI_RE.match(abi)
+    return m.group(1) if m else "unknown"
+
+
+def _lump_and_cap(counts: "Counter[str]", order: list[str],
+                  max_slices: int = _MAX_DONUT_SLICES) -> list[tuple[str, int]]:
+    """counts (label -> n) into at most `max_slices` (label, n) pairs, most of
+    `order` first (so slot/color assignment is stable across re-renders even as
+    counts shift), unlisted labels next alphabetically, and -- only once there
+    are more than `max_slices` distinct labels -- the smallest tail folded into
+    a trailing ("Other", n). The labels kept are always the biggest, so nothing
+    that matters gets folded away to make room for something smaller.
+    """
+    if not counts:
+        return []
+    ordered = [l for l in order if l in counts] + sorted(l for l in counts if l not in order)
+    if len(ordered) <= max_slices:
+        return [(l, counts[l]) for l in ordered]
+    kept = set(sorted(ordered, key=lambda l: -counts[l])[: max_slices - 1])
+    rows = [(l, counts[l]) for l in ordered if l in kept]
+    rows.append(("Other", sum(n for l, n in counts.items() if l not in kept)))
+    return rows
+
+
+def _architecture_donut(downloads: list[dict[str, Any]]) -> "_DonutData | None":
+    """Successful downloads grouped into the lumped families above, for the main
+    "which CPUs are droppers actually serving" donut -- the RISC-V capture side
+    of this project cares about this more than any other single view. A family
+    that has any arch_mismatch judgement at all (only ever RISC-V, per
+    honeypot/fetcher/elf.py's arch_matches_persona -- it judges nothing else) gets
+    its match/mismatch counts annotated, since that is the one architecture this
+    honeypot's own persona can actually be compared against."""
+    counts: Counter[str] = Counter()
+    match: dict[str, int] = {}
+    mismatch: dict[str, int] = {}
     for ev in downloads:
         if ev.get("outcome") != "success":
             continue
-        is_elf = ev.get("detected_type") == "elf"
-        machine = ev.get("detected_machine") or "(unknown machine)" if is_elf else (ev.get("detected_type") or "unknown")
-        bitness = f"{ev['detected_bitness']}-bit" if ev.get("detected_bitness") else "-"
-        endianness = ev.get("detected_endianness") or "-"
-        abi = ev.get("detected_abi") or (f"flags={ev['detected_flags']:#x}" if ev.get("detected_flags") else "-")
-        key = (machine, bitness, endianness, abi if is_elf else "-")
-        g = groups.setdefault(key, {"count": 0, "stage2": 0, "shas": set(), "match": 0, "mismatch": 0})
-        g["count"] += 1
-        if ev.get("stage"):
-            g["stage2"] += 1
-        if ev.get("sha256"):
-            g["shas"].add(ev["sha256"])
+        family = _arch_family(ev)
+        counts[family] += 1
         if ev.get("arch_mismatch") is False:
-            g["match"] += 1
+            match[family] = match.get(family, 0) + 1
         elif ev.get("arch_mismatch") is True:
-            g["mismatch"] += 1
+            mismatch[family] = mismatch.get(family, 0) + 1
+    rows = _lump_and_cap(counts, _FAMILY_ORDER)
+    if not rows:
+        return None
+    return _DonutData(rows, {l: (match.get(l, 0), mismatch.get(l, 0)) for l, _ in rows})
 
-    rows = []
-    for (machine, bitness, endianness, abi), g in sorted(groups.items(), key=lambda kv: -kv[1]["count"]):
-        is_match = g["match"] > 0
-        label = _esc(machine) + (" <span class='tag'>MATCHES PERSONA</span>" if is_match else "")
-        arch_note = "-"
-        if g["match"] or g["mismatch"]:
-            parts = []
-            if g["match"]:
-                parts.append(f"{g['match']} match")
-            if g["mismatch"]:
-                parts.append(f"{g['mismatch']} mismatch")
-            arch_note = ", ".join(parts)
-        rows.append({
-            "cells": [label, _esc(bitness), _esc(endianness), _esc(abi), str(g["count"]),
-                     str(len(g["shas"])), str(g["stage2"]) if g["stage2"] else "-", arch_note],
-            "match": is_match,
-        })
-    return rows
+
+def _arm_version_donut(downloads: list[dict[str, Any]]) -> "_DonutData | None":
+    """ARM successful downloads only, broken down by EABI version -- e_flags does
+    NOT carry the ARM CPU architecture level (v5/v6/v7 lives in a section
+    honeypot/fetcher/elf.py deliberately never walks), so this is EABI version and
+    float ABI, the finest-grained split the detector can actually make."""
+    counts: Counter[str] = Counter(
+        _arm_eabi_bucket(ev) for ev in downloads
+        if ev.get("outcome") == "success" and _arch_family(ev) == "ARM"
+    )
+    rows = _lump_and_cap(counts, _ARM_EABI_ORDER)
+    return _DonutData(rows, {}) if rows else None
 
 
 def _failure_breakdown(downloads: list[dict[str, Any]]) -> list[list[str]]:
@@ -357,6 +464,89 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
         for row in rows
     )
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+@dataclass
+class _DonutData:
+    # [(label, count), ...] -- already lumped/capped/ordered by _lump_and_cap.
+    rows: list[tuple[str, int]]
+    # label -> (match_count, mismatch_count), for the one family (if any) this
+    # honeypot's persona architecture can actually be judged against. Empty dict
+    # when nothing in this donut carries that judgement (e.g. the ARM chart).
+    persona: dict[str, tuple[int, int]]
+
+
+# Categorical slots (validated: node scripts/validate_palette.js against both
+# #ffffff/light and #171d2b/dark, this file's own --panel colors -- see
+# dataviz skill references/palette.md). Slot assignment is _slot_for_label above,
+# not render position. Applied as a CSS class rather than an inline
+# `stroke="var(...)"` presentation attribute -- same reason the existing
+# world-map dots above use `class="ip-dot"` rather than an inline color: var()
+# resolution inside an SVG presentation *attribute* (as opposed to an actual
+# style/stylesheet property) is not reliably specified, so every themed color
+# in this file goes through a class and a real CSS rule.
+_DONUT_GAP_PX = 2  # the mark spec's "2px surface gap" between adjacent segments
+
+
+def _donut_svg(data: "_DonutData", center_label: str, chart_id: str) -> str:
+    """An SVG ring chart + an always-visible text legend (label, count, percent) --
+    the legend carries the exact numbers so nothing here is hover-only (a native
+    <title> per arc still gives a hover tooltip, same convention as the world map's
+    <circle> dots above). A part-to-whole donut is deliberately capped at <=6
+    segments by _lump_and_cap before it ever reaches here (a donut only reads "at a
+    glance"; past that a table is the honest form -- see status_check.py for one).
+    """
+    rows = data.rows
+    total = sum(n for _, n in rows)
+    if not rows or total == 0:
+        return "<p class='empty'>No data yet.</p>"
+
+    size, stroke = 148, 26
+    r = (size - stroke) / 2
+    cx = cy = size / 2
+    circumference = 2 * math.pi * r
+    cumulative = 0.0
+    arcs, legend = [], []
+    for label, count in rows:
+        frac = count / total
+        seg_len = frac * circumference
+        dash = max(seg_len - _DONUT_GAP_PX, 0) if len(rows) > 1 else seg_len
+        slot_class = _slot_for_label(label)
+        arcs.append(
+            f"<circle class='donut-arc {slot_class}' cx='{cx}' cy='{cy}' r='{r:.2f}' "
+            f"stroke-width='{stroke}' stroke-linecap='butt' "
+            f"stroke-dasharray='{dash:.2f} {circumference - dash:.2f}' "
+            f"stroke-dashoffset='{-cumulative:.2f}'>"
+            f"<title>{_esc(label)}: {count} ({frac * 100:.0f}%)</title></circle>"
+        )
+        cumulative += seg_len
+
+        note = ""
+        m, mm = data.persona.get(label, (0, 0))
+        if m or mm:
+            parts = []
+            if m:
+                parts.append(f"<span class='donut-match'>&check; {m} match</span>")
+            if mm:
+                parts.append(f"<span class='donut-mismatch'>&ne; {mm} mismatch</span>")
+            note = f"<span class='donut-legend-note'>{' '.join(parts)}</span>"
+        legend.append(
+            "<div class='donut-legend-row'>"
+            f"<span class='swatch {slot_class}'></span>"
+            f"<span class='donut-legend-label'>{_esc(label)}</span>"
+            f"<span class='donut-legend-count'>{count} &middot; {frac * 100:.0f}%</span>"
+            f"{note}</div>"
+        )
+
+    svg = (
+        f"<svg viewBox='0 0 {size} {size}' width='{size}' height='{size}' role='img' "
+        f"aria-label='{_esc(center_label)}: {total} total'>"
+        f"<g transform='rotate(-90 {cx} {cy})'>{''.join(arcs)}</g>"
+        f"<text x='{cx}' y='{cy - 3}' text-anchor='middle' class='donut-total'>{total}</text>"
+        f"<text x='{cx}' y='{cy + 15}' text-anchor='middle' class='donut-total-label'>"
+        f"{_esc(center_label)}</text></svg>"
+    )
+    return f"<div class='donut' id='{chart_id}'>{svg}<div class='donut-legend'>{''.join(legend)}</div></div>"
 
 
 def _word_cloud(counts: Counter[str], empty_label: str) -> str:
@@ -427,10 +617,23 @@ _CSS = """
   color-scheme: light dark;
   --bg: #0f1420; --panel: #171d2b; --border: #2a3348; --text: #e8ecf4;
   --muted: #8b96ad; --accent: #5fb0ff; --dot: #ff6b6b;
+  /* Categorical series (dark step): validated against this file's own dark
+     --panel #171d2b with the dataviz skill's validator -- worst adjacent CVD
+     Delta E 8.4 (>=8 target), worst normal-vision Delta E 19.3 (>=15 floor),
+     all 8 >= 3:1 contrast. Order is fixed and never re-cycled -- see
+     _FAMILY_SLOT in this file for why RISC-V is always slot 1. */
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
 }
 @media (prefers-color-scheme: light) {
   :root { --bg: #f4f6fb; --panel: #ffffff; --border: #dde3ee; --text: #16202e;
-          --muted: #5b6779; --accent: #1266c9; --dot: #d1364a; }
+          --muted: #5b6779; --accent: #1266c9; --dot: #d1364a;
+          /* Light step: validated against #ffffff -- worst adjacent CVD Delta E 9.1,
+             worst normal-vision Delta E 19.6. Three slots (3/5/... aqua/magenta family)
+             sit below 3:1 on this light surface by design; every use here pairs the
+             color with visible text (legend label + count), never color alone. */
+          --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+          --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
@@ -461,8 +664,29 @@ td.wrap-cell { white-space: normal; word-break: break-all; }
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8em; }
 .pill.ok { background: #1c8a4a33; color: #1c8a4a; }
 .pill.bad { background: #c4384033; color: #c43840; }
-.arch-row.match { background: #1c8a4a1a; }
-.arch-row .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 0.75em; background: var(--accent); color: var(--panel); font-weight: 600; }
+.donut { display: flex; flex-wrap: wrap; align-items: center; gap: 18px 24px; }
+.donut svg { flex: none; }
+.donut-arc { fill: none; }
+.donut-arc.s1, .swatch.s1 { --slot: var(--series-1); }
+.donut-arc.s2, .swatch.s2 { --slot: var(--series-2); }
+.donut-arc.s3, .swatch.s3 { --slot: var(--series-3); }
+.donut-arc.s4, .swatch.s4 { --slot: var(--series-4); }
+.donut-arc.s5, .swatch.s5 { --slot: var(--series-5); }
+.donut-arc.s6, .swatch.s6 { --slot: var(--series-6); }
+.donut-arc.s7, .swatch.s7 { --slot: var(--series-7); }
+.donut-arc.s8, .swatch.s8 { --slot: var(--series-8); }
+.donut-arc.other, .swatch.other { --slot: var(--muted); }
+.donut-arc { stroke: var(--slot); }
+.donut-total { font-size: 26px; font-weight: 700; fill: var(--text); }
+.donut-total-label { font-size: 10px; fill: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.donut-legend { display: flex; flex-direction: column; gap: 7px; flex: 1 1 200px; min-width: 200px; }
+.donut-legend-row { display: flex; align-items: center; gap: 8px; font-size: 0.85em; flex-wrap: wrap; }
+.swatch { width: 11px; height: 11px; min-width: 11px; border-radius: 3px; background: var(--slot); }
+.donut-legend-label { flex: 1; }
+.donut-legend-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.donut-legend-note { flex-basis: 100%; padding-left: 19px; font-size: 0.9em; }
+.donut-match { color: #0ca30c; font-weight: 600; }
+.donut-mismatch { color: #d03b3b; font-weight: 600; }
 """
 
 
@@ -549,22 +773,22 @@ def render_html(report: Report, geo: GeoLookup) -> str:
         download_rows,
     )
 
-    arch_rows = _architecture_breakdown(report.downloads)
-    if arch_rows:
-        arch_table = (
-            "<table><thead><tr>" +
-            "".join(f"<th>{h}</th>" for h in
-                    ["CPU / type", "Bitness", "Endianness", "ABI / flags", "Downloads",
-                     "Distinct samples", "Stage-2", "vs. persona"]) +
-            "</tr></thead><tbody>" +
-            "".join(
-                f"<tr class='arch-row{' match' if r['match'] else ''}'>" +
-                "".join(f"<td>{c}</td>" for c in r["cells"]) + "</tr>"
-                for r in arch_rows
-            ) + "</tbody></table>"
-        )
-    else:
-        arch_table = "<p class='empty'>No successful downloads yet.</p>"
+    architecture_donut_data = _architecture_donut(report.downloads)
+    architecture_donut = (
+        _donut_svg(architecture_donut_data, "downloads", "donut-architecture")
+        if architecture_donut_data else "<p class='empty'>No successful downloads yet.</p>"
+    )
+    arm_donut_data = _arm_version_donut(report.downloads)
+    arm_section = ""
+    if arm_donut_data:
+        arm_section = f"""
+    <div class="panel">
+      <h2>ARM builds by EABI version</h2>
+      <p class="subtitle" style="margin:-4px 0 10px">e_flags does not carry the ARM CPU
+      architecture level (v5/v6/v7 lives in a section honeypot/fetcher/elf.py deliberately
+      never walks) -- EABI version and float ABI is the finest split the detector can make.</p>
+      {_donut_svg(arm_donut_data, "ARM downloads", "donut-arm")}
+    </div>"""
 
     failure_table = _table(
         ["Reason", "Count", "Stage-2"],
@@ -648,14 +872,14 @@ def render_html(report: Report, geo: GeoLookup) -> str:
   </div>
   <div class="panel"><h2>Last 10 commands</h2>{command_table}</div>
   <div class="panel"><h2>Last 10 file downloads</h2>{download_table}</div>
-  <div class="panel">
-    <h2>Downloads by architecture</h2>
-    <p class="subtitle" style="margin:-4px 0 10px">Successful downloads only, grouped by detected CPU/type,
-    bitness, endianness and ABI (flags shown raw where not decoded) -- "Distinct samples" counts unique
-    SHA256s so re-fetches of the same payload aren't double-counted, and "Stage-2" is how many were found
-    by scanning a captured script rather than typed directly (see honeypot/fetcher/script_scan.py). Rows
-    matching this honeypot's persona architecture are highlighted.</p>
-    {arch_table}
+  <div class="grid-2">
+    <div class="panel"{'' if arm_section else " style='grid-column:1/-1'"}>
+      <h2>Downloads by architecture</h2>
+      <p class="subtitle" style="margin:-4px 0 10px">Successful downloads, grouped into CPU families
+      (related machines lumped together, e.g. MIPS/MIPSEL) -- a &check; next to RISC-V is this honeypot's
+      own persona architecture actually being matched, the whole point of the project.</p>
+      {architecture_donut}
+    </div>{arm_section}
   </div>
   <div class="panel"><h2>Failed downloads by reason</h2>{failure_table}</div>
   {off_list_section}

@@ -592,17 +592,26 @@ for the same reason as everywhere else in this README: CLAUDE.md / the
 build spec mark a web dashboard as out of scope for the honeypot itself,
 so these are separate, read-only consumers of the logs, never imported by
 or running alongside the listeners. All three agree on the numbers --
-The HTML report (both the static and live forms) breaks downloads down by
-detected architecture -- CPU/type, bitness, endianness, ABI (decoded where
-`honeypot/fetcher/elf.py` can; the raw `e_flags` word otherwise), successful
-downloads, distinct samples (deduped by SHA256, so re-fetches of the same
-payload aren't double-counted), how many were found by stage two (a script
-listing more URLs, see `honeypot/fetcher/script_scan.py`) rather than typed
-directly by the attacker, and how many match vs. mismatch this honeypot's own
-persona architecture -- rows that match are highlighted, since a RISC-V match
-is the whole point of the project. A second table buckets failed downloads by
-reason (HTTP status, blocked by the SSRF guard, unimplemented protocol, and so
-on) with counts, so e.g. fifty 404s show as one row, not fifty.
+The HTML report (both the static and live forms) shows successful downloads as
+a **donut chart of CPU architecture families** -- related machines are lumped
+together (e.g. MIPS/MIPSEL, told apart only by endianness, are one slice; every
+non-ELF capture -- a script, a stray HTML page -- folds into one neutral
+"(non-ELF file)" slice, since that's a file *type*, not a CPU architecture,
+and isn't what this chart is about) so it reads at a glance rather than as a
+wide table. A &check; next to RISC-V is this honeypot's own persona
+architecture actually being matched -- the whole point of the project -- shown
+as annotated legend text (a status color, never the identity color itself)
+alongside any mismatches. When any ARM builds were captured, a second donut
+breaks them down by EABI version specifically (`honeypot/fetcher/elf.py`'s
+`e_flags` decoding does *not* carry the ARM CPU architecture level -- v5/v6/v7
+lives in a section it deliberately never walks -- so EABI version and float ABI
+is the finest split available). Colors are assigned per architecture, not per
+render, so e.g. ARM keeps the same color on a day RISC-V had zero downloads --
+the exact bitness/endianness/ABI/flags detail either donut lumps away is still
+in every raw `file.download` event and in `status_check.py`'s per-download
+listing. A separate table buckets failed downloads by reason (HTTP status,
+blocked by the SSRF guard, unimplemented protocol, and so on) with counts, so
+e.g. fifty 404s show as one row, not fifty.
 
 `dashboard_server.py` and `status_check.py` both reuse `dashboard.py`'s
 `Report` for aggregation rather than each computing their own.

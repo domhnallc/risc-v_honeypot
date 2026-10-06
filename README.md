@@ -688,6 +688,18 @@ If you deliberately pass a non-loopback `--host`, put an authenticating
 reverse proxy in front of it first -- Flask's built-in server is a
 development server either way, not something to expose directly.
 
+**Keeping it running** (`deploy/dashboard-server.service`): running it by hand
+in a terminal means it's gone the next time you reconnect and forgot it was
+there. Install it as a systemd service instead -- same `127.0.0.1`-only
+exposure, just always up and restarted automatically:
+
+```
+sudo sed 's#/root/risc-v_honeypot#'"$HOME"'/risc-v_honeypot#g' \
+  deploy/dashboard-server.service | sudo tee /etc/systemd/system/dashboard-server.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now dashboard-server.service
+```
+
 Neither tool ships a GeoLite2 database -- MaxMind's license requires a
 free signup before you can download `GeoLite2-City.mmdb` yourself
 (https://dev.maxmind.com/geoip/geolite2-free-geolocation-data). Omit

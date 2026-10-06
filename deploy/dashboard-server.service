@@ -1,0 +1,43 @@
+# Keeps tools/dashboard_server.py (the live analyst dashboard) always running and
+# restarting across reboots, instead of something started by hand in a tmux/screen
+# session that silently isn't there anymore next time someone tries to tunnel to it.
+#
+# dashboard_server.py already defaults to --host 127.0.0.1 (loopback only) by its own
+# design -- see its own SECURITY NOTE in that file -- so running it as a persistent
+# service changes nothing about its exposure: still only reachable via an SSH tunnel,
+# never directly, and it still shows real captured attacker credentials with no
+# authentication of its own.
+#
+# Install (substitute your actual clone path for /root/risc-v_honeypot):
+#   sudo sed 's#/root/risc-v_honeypot#'"$HOME"'/risc-v_honeypot#g' \
+#     deploy/dashboard-server.service | sudo tee /etc/systemd/system/dashboard-server.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dashboard-server.service
+#   systemctl status dashboard-server.service       # confirm it's up
+#   journalctl -u dashboard-server.service -f        # tail its logs
+#
+# --geoip is optional (tools/dashboard.py skips the map/country sections without it) --
+# drop that argument below if var/GeoLite2-City.mmdb isn't present on this deployment.
+
+[Unit]
+Description=RISC-V honeypot live dashboard (tools/dashboard_server.py)
+After=network.target
+# Caps restart attempts to 5 within 5 minutes rather than looping forever if
+# something is genuinely broken (e.g. the venv itself is missing) -- past that,
+# `systemctl reset-failed dashboard-server.service` before trying again.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/risc-v_honeypot
+ExecStart=/root/risc-v_honeypot/.venv/bin/python3 tools/dashboard_server.py --events var/logs/events.jsonl --geoip var/GeoLite2-City.mmdb
+Restart=always
+RestartSec=5
+# Read-only reporting tool, no privileges required -- root here only because this
+# deployment's whole admin surface (SSH, docker) already runs as root. Point this
+# at a dedicated non-root user instead if this host has one.
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -655,6 +655,18 @@ fine wherever `honeypot` *is* importable (the venv from "Installation"
 above, or one made just for `tools/`, per `pip install -e
 '.[dashboard-server]'` below).
 
+**Reading one session** (`tools/transcript.py`, no extra install needed):
+transcripts store raw I/O base64-encoded; this decodes one into readable
+text, with every control/escape/bidi character shown as a visible
+`\xNN`/`\uNNNN` (the bytes are attacker-controlled, so never `base64 -d`
+them straight to a terminal). Consecutive same-direction chunks are merged,
+so telnet's byte-at-a-time input reads as whole lines.
+
+```
+python3 tools/transcript.py var/transcripts/<session_id>.jsonl
+python3 tools/transcript.py <session_id> --input-only   # just what the client sent
+```
+
 **Static, one-shot** (`tools/dashboard.py`, `pip install -e '.[dashboard]'`):
 renders a single self-contained HTML file you open in a browser; re-run it
 whenever you want a fresh snapshot.
